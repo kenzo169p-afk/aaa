@@ -347,8 +347,18 @@ function getPageHeaderMeta() {
   return map[STATE.activeNav] || map.calculadora;
 }
 
+function getRootContainer() {
+  let el = document.getElementById("root") || document.getElementById("app");
+  if (!el) {
+    el = document.createElement("div");
+    el.id = "root";
+    document.body.prepend(el);
+  }
+  return el;
+}
+
 function renderApp() {
-  const root = document.getElementById("root");
+  const root = getRootContainer();
   if (!STATE.tenant) {
     root.innerHTML = `<div style="padding:40px;text-align:center">Carregando plataforma SaaS Contábil...</div>`;
     return;
@@ -2058,7 +2068,7 @@ async function submitEditProposal(propId) {
 function renderPublicProposalStandaloneView(publicToken) {
   const db = getOrInitBrowserDB();
   const prop = db.proposals.find((p) => p.public_token === publicToken);
-  const root = document.getElementById("root");
+  const root = getRootContainer();
   if (!prop) {
     root.innerHTML = `<div style="padding:40px;text-align:center"><h2>Proposta não encontrada.</h2><br/><a class="btn-primary" href="./index.html">Voltar à Plataforma</a></div>`;
     return;
