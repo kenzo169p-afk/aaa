@@ -403,13 +403,18 @@ function buildTenantSeedData(tenantId, name, tradeName, cnpj, crc, email, phone,
   return { tenant, paramVersion, plansServices, stages, lossReasons, template };
 }
 
+let MEMORY_DB_CACHE = null;
+let _saveDbTimer = null;
+
 function getOrInitBrowserDB() {
+  if (MEMORY_DB_CACHE) return MEMORY_DB_CACHE;
   try {
     const raw = localStorage.getItem(BROWSER_DB_KEY);
     if (raw) {
       const parsed = JSON.parse(raw);
       if (parsed && Array.isArray(parsed.tenants) && parsed.tenants.length > 0) {
-        return parsed;
+        MEMORY_DB_CACHE = parsed;
+        return MEMORY_DB_CACHE;
       }
     }
   } catch (_) {}
@@ -867,17 +872,24 @@ function getOrInitBrowserDB() {
     ]
   };
 
+  MEMORY_DB_CACHE = db;
   saveBrowserDB(db);
   return db;
 }
 
 function saveBrowserDB(db) {
-  try {
-    localStorage.setItem(BROWSER_DB_KEY, JSON.stringify(db));
-  } catch (_) {}
+  MEMORY_DB_CACHE = db;
+  if (_saveDbTimer) clearTimeout(_saveDbTimer);
+  _saveDbTimer = setTimeout(() => {
+    try {
+      localStorage.setItem(BROWSER_DB_KEY, JSON.stringify(MEMORY_DB_CACHE));
+    } catch (_) {}
+  }, 60);
 }
 
 function resetBrowserDB() {
+  MEMORY_DB_CACHE = null;
+  if (_saveDbTimer) clearTimeout(_saveDbTimer);
   localStorage.removeItem(BROWSER_DB_KEY);
   return getOrInitBrowserDB();
 }

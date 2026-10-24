@@ -141,15 +141,20 @@ window.addEventListener("resize", () => {
 });
 
 /**
- * Roteador Híbrido: Usa API de Servidor quando disponível ou Motor de Navegador (GitHub Pages) automaticamente
+ * /**
+ * Roteador Híbrido Ultra-Rápido:
+ * Prioriza execução instantânea em memória (0ms) no GitHub Pages / Navegador,
+ * ou conecta à API Python local (porta 8080) quando ativa.
  */
 async function apiFetch(path, options = {}) {
-  const isGitHubPagesOrFile =
+  const isServerPort = window.location.port === "8080" && window.location.protocol.startsWith("http");
+  const useLocalEngineDirectly =
     window.location.hostname.endsWith("github.io") ||
     window.location.protocol === "file:" ||
-    STATE.runtimeMode === "browser_pages";
+    STATE.runtimeMode === "browser_pages" ||
+    (!isServerPort && STATE.runtimeMode !== "server_api");
 
-  if (!isGitHubPagesOrFile) {
+  if (!useLocalEngineDirectly) {
     try {
       const headers = {
         "Content-Type": "application/json",
@@ -160,7 +165,7 @@ async function apiFetch(path, options = {}) {
         headers["Authorization"] = `Bearer ${STATE.token}`;
       }
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 1800);
+      const timeoutId = setTimeout(() => controller.abort(), 350);
       const resp = await fetch(path, { ...options, headers, signal: controller.signal });
       clearTimeout(timeoutId);
       const contentType = resp.headers.get("content-type") || "";
@@ -184,7 +189,7 @@ async function apiFetch(path, options = {}) {
 
 function applyTenantTheme(tenant) {
   if (!tenant) return;
-  const primary = tenant.primary_color || "#C9A227";
+  const primary = tenant.primary_color || "#E5A93C";
   document.documentElement.style.setProperty("--gold", primary);
   document.documentElement.style.setProperty("--gold-soft", primary);
 }
@@ -224,8 +229,8 @@ async function bootstrapApp() {
       STATE.calc.taxaImplantacao = pv.default_setup_fee;
     }
 
-    await runCalculation();
-    renderApp();
+    runCalculationSync();
+    renderApp(true);
   } catch (err) {
     showToast("Erro ao inicializar plataforma: " + err.message, true);
   }
@@ -270,7 +275,24 @@ async function loadSettings() {
   STATE.settingsData = res;
 }
 
+/**
+ * Cálculo Síncrono Instantâneo (< 0.05ms em RAM) — Zero travamento de interface
+ */
+function runCalculationSync() {
+  if (typeof calculateHonorariosBrowser === "function") {
+    const pv = STATE.parameters?.activeVersion || null;
+    const ps = STATE.parameters?.plansServices || [];
+    const maxDisc = STATE.currentUser?.max_discount_pct ?? 15;
+    STATE.calcResult = calculateHonorariosBrowser(STATE.calc, pv, ps, maxDisc);
+    return STATE.calcResult;
+  }
+  return STATE.calcResult;
+}
+
 async function runCalculation(verifyWithCSharp = false) {
+  if (!verifyWithCSharp && typeof calculateHonorariosBrowser === "function") {
+    return runCalculationSync();
+  }
   const res = await apiFetch("/api/calculator/calculate", {
     method: "POST",
     body: JSON.stringify({ ...STATE.calc, verifyWithCSharp })
@@ -295,13 +317,20 @@ async function navigateTo(navKey, subTab = null) {
     await loadSettings();
   }
   renderApp();
-  window.scrollTo({ top: 0, behavior: "smooth" });
+  window.scrollTo({ top: 0, behavior: "instant" });
 }
 
 function toggleSidebar() {
   STATE.userToggledSidebar = true;
   STATE.sidebarCollapsed = !STATE.sidebarCollapsed;
-  renderApp();
+  const shell = document.getElementById("saas-shell-root");
+  const btn = document.getElementById("sidebar-toggle-btn");
+  if (shell) {
+    shell.classList.toggle("collapsed", STATE.sidebarCollapsed);
+    if (btn) btn.textContent = STATE.sidebarCollapsed ? "»" : "«";
+    return;
+  }
+  renderApp(true);
 }
 
 async function switchUserAccount(userId) {
@@ -357,7 +386,7 @@ function getRootContainer() {
   return el;
 }
 
-function renderApp() {
+function renderApp(forceFullShell = false) {
   const root = getRootContainer();
   if (!STATE.tenant) {
     root.innerHTML = `<div style="padding:40px;text-align:center">Carregando plataforma SaaS Contábil...</div>`;
@@ -365,15 +394,9 @@ function renderApp() {
   }
 
   const meta = getPageHeaderMeta();
-  const initials = (STATE.tenant.trade_name || STATE.tenant.name || "EC")
-    .split(" ")
-    .slice(0, 2)
-    .map((w) => w[0])
-    .join("")
-    .toUpperCase();
-
   const openOppsCount = STATE.crm.opportunities.filter((o) => o.status === "aberta").length;
   const propsCount = STATE.proposals.length;
+  const paramVer = STATE.parameters?.activeVersion?.version_number || 1;
 
   let mainContentHtml = "";
   if (STATE.activeNav === "parametros") mainContentHtml = renderParametrosView();
@@ -382,8 +405,45 @@ function renderApp() {
   else if (STATE.activeNav === "crm") mainContentHtml = renderCRMView();
   else if (STATE.activeNav === "configuracoes") mainContentHtml = renderConfiguracoesView();
 
+  const existingMain = document.getElementById("page-main-content");
+  const sameContext =
+    !forceFullShell &&
+    existingMain &&
+    root.dataset.tenantId === String(STATE.tenant.id) &&
+    root.dataset.userId === String(STATE.currentUser?.user_id || "");
+
+  if (sameContext) {
+    existingMain.innerHTML = mainContentHtml;
+    const titleEl = document.getElementById("topbar-page-title");
+    const subEl = document.getElementById("topbar-page-sub");
+    if (titleEl) titleEl.textContent = meta.title;
+    if (subEl) subEl.textContent = meta.sub;
+
+    const bVer = document.getElementById("badge-param-ver");
+    const bProps = document.getElementById("badge-props-count");
+    const bCrm = document.getElementById("badge-crm-count");
+    if (bVer) bVer.textContent = `v${paramVer}`;
+    if (bProps) bProps.textContent = String(propsCount);
+    if (bCrm) bCrm.textContent = String(openOppsCount);
+
+    document.querySelectorAll("[data-nav-key]").forEach((btn) => {
+      btn.classList.toggle("active", btn.getAttribute("data-nav-key") === STATE.activeNav);
+    });
+    return;
+  }
+
+  root.dataset.tenantId = String(STATE.tenant.id);
+  root.dataset.userId = String(STATE.currentUser?.user_id || "");
+
+  const initials = (STATE.tenant.trade_name || STATE.tenant.name || "EC")
+    .split(" ")
+    .slice(0, 2)
+    .map((w) => w[0])
+    .join("")
+    .toUpperCase();
+
   root.innerHTML = `
-    <div class="saas-shell ${STATE.sidebarCollapsed ? "collapsed" : ""}">
+    <div id="saas-shell-root" class="saas-shell ${STATE.sidebarCollapsed ? "collapsed" : ""}">
       <!-- MENU LATERAL ESQUERDO FIXO E RECOLHÍVEL NA ORDEM EXATA SOLICITADA -->
       <aside class="sidebar">
         <div class="sidebar-brand">
@@ -394,39 +454,39 @@ function renderApp() {
               <span class="brand-sub">${escapeHtml(STATE.tenant.crc_registration || "SaaS Contábil")}</span>
             </div>
           </div>
-          <button class="sidebar-toggle" onclick="toggleSidebar()" title="Recolher / Expandir menu">
+          <button id="sidebar-toggle-btn" class="sidebar-toggle" onclick="toggleSidebar()" title="Recolher / Expandir menu">
             ${STATE.sidebarCollapsed ? "»" : "«"}
           </button>
         </div>
 
         <nav class="sidebar-nav" aria-label="Menu Principal">
-          <button class="nav-item ${STATE.activeNav === "parametros" ? "active" : ""}" onclick="navigateTo('parametros')">
+          <button data-nav-key="parametros" class="nav-item ${STATE.activeNav === "parametros" ? "active" : ""}" onclick="navigateTo('parametros')">
             <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/><line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/><line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/><line x1="1" y1="14" x2="7" y2="14"/><line x1="9" y1="8" x2="15" y2="8"/><line x1="17" y1="16" x2="23" y2="16"/></svg>
             <span class="nav-label">Parâmetros</span>
-            <span class="nav-badge">v${STATE.parameters?.activeVersion?.version_number || 1}</span>
+            <span id="badge-param-ver" class="nav-badge">v${paramVer}</span>
           </button>
 
-          <button class="nav-item ${STATE.activeNav === "calculadora" ? "active" : ""}" onclick="navigateTo('calculadora')">
+          <button data-nav-key="calculadora" class="nav-item ${STATE.activeNav === "calculadora" ? "active" : ""}" onclick="navigateTo('calculadora')">
             <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="2" width="16" height="20" rx="2"/><line x1="8" y1="6" x2="16" y2="6"/><line x1="16" y1="14" x2="16" y2="18"/><path d="M16 10h.01"/><path d="M12 10h.01"/><path d="M8 10h.01"/><path d="M12 14h.01"/><path d="M8 14h.01"/><path d="M12 18h.01"/><path d="M8 18h.01"/></svg>
             <span class="nav-label">Calculadora</span>
           </button>
 
-          <button class="nav-item ${STATE.activeNav === "propostas" ? "active" : ""}" onclick="navigateTo('propostas')">
+          <button data-nav-key="propostas" class="nav-item ${STATE.activeNav === "propostas" ? "active" : ""}" onclick="navigateTo('propostas')">
             <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>
             <span class="nav-label">Propostas</span>
-            <span class="nav-badge">${propsCount}</span>
+            <span id="badge-props-count" class="nav-badge">${propsCount}</span>
           </button>
 
-          <button class="nav-item ${STATE.activeNav === "crm" ? "active" : ""}" onclick="navigateTo('crm')">
+          <button data-nav-key="crm" class="nav-item ${STATE.activeNav === "crm" ? "active" : ""}" onclick="navigateTo('crm')">
             <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M7 7h3v10H7z"/><path d="M14 7h3v6h-3z"/></svg>
             <span class="nav-label">CRM de Vendas</span>
-            <span class="nav-badge">${openOppsCount}</span>
+            <span id="badge-crm-count" class="nav-badge">${openOppsCount}</span>
           </button>
         </nav>
 
         <!-- NA PARTE INFERIOR: CONFIGURAÇÕES -->
         <div class="sidebar-footer">
-          <button class="nav-item ${STATE.activeNav === "configuracoes" ? "active" : ""}" onclick="navigateTo('configuracoes')">
+          <button data-nav-key="configuracoes" class="nav-item ${STATE.activeNav === "configuracoes" ? "active" : ""}" onclick="navigateTo('configuracoes')">
             <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
             <span class="nav-label">Configurações</span>
           </button>
@@ -438,8 +498,8 @@ function renderApp() {
         <header class="topbar">
           <div class="topbar-left">
             <div>
-              <h1 class="page-title">${escapeHtml(meta.title)}</h1>
-              <p class="page-subtitle">${escapeHtml(meta.sub)}</p>
+              <h1 id="topbar-page-title" class="page-title">${escapeHtml(meta.title)}</h1>
+              <p id="topbar-page-sub" class="page-subtitle">${escapeHtml(meta.sub)}</p>
             </div>
           </div>
 
@@ -468,26 +528,26 @@ function renderApp() {
           </div>
         </header>
 
-        <main class="page-container">
+        <main id="page-main-content" class="page-container">
           ${mainContentHtml}
         </main>
       </div>
 
       <!-- NAVEGAÇÃO INFERIOR ADAPTATIVA PARA TELAS MOBILE / TOUCH -->
       <nav class="mobile-bottom-nav" aria-label="Menu Mobile">
-        <button class="mobile-nav-btn ${STATE.activeNav === "parametros" ? "active" : ""}" onclick="navigateTo('parametros')">
+        <button data-nav-key="parametros" class="mobile-nav-btn ${STATE.activeNav === "parametros" ? "active" : ""}" onclick="navigateTo('parametros')">
           <span>⚙️</span><span>Parâmetros</span>
         </button>
-        <button class="mobile-nav-btn ${STATE.activeNav === "calculadora" ? "active" : ""}" onclick="navigateTo('calculadora')">
+        <button data-nav-key="calculadora" class="mobile-nav-btn ${STATE.activeNav === "calculadora" ? "active" : ""}" onclick="navigateTo('calculadora')">
           <span>🧮</span><span>Calculadora</span>
         </button>
-        <button class="mobile-nav-btn ${STATE.activeNav === "propostas" ? "active" : ""}" onclick="navigateTo('propostas')">
+        <button data-nav-key="propostas" class="mobile-nav-btn ${STATE.activeNav === "propostas" ? "active" : ""}" onclick="navigateTo('propostas')">
           <span>📄</span><span>Propostas (${propsCount})</span>
         </button>
-        <button class="mobile-nav-btn ${STATE.activeNav === "crm" ? "active" : ""}" onclick="navigateTo('crm')">
+        <button data-nav-key="crm" class="mobile-nav-btn ${STATE.activeNav === "crm" ? "active" : ""}" onclick="navigateTo('crm')">
           <span>📊</span><span>CRM (${openOppsCount})</span>
         </button>
-        <button class="mobile-nav-btn ${STATE.activeNav === "configuracoes" ? "active" : ""}" onclick="navigateTo('configuracoes')">
+        <button data-nav-key="configuracoes" class="mobile-nav-btn ${STATE.activeNav === "configuracoes" ? "active" : ""}" onclick="navigateTo('configuracoes')">
           <span>🔧</span><span>Config.</span>
         </button>
       </nav>
@@ -891,6 +951,130 @@ async function deletePlanService(id) {
 /* =========================================================================
    2. MÓDULO CALCULADORA (PRESERVANDO INTEGRALMENTE AS FÓRMULAS ORIGINAIS)
    ========================================================================= */
+function getCalcSafeResult() {
+  return (
+    STATE.calcResult ||
+    runCalculationSync() || {
+      custoHora: 87.5,
+      horaTecnica: 113.75,
+      horasTotais: 5.9,
+      piso: 516.25,
+      sugerido: 671.12,
+      honorarioFinal: 671.12,
+      descontoPct: 0,
+      valorDesconto: 0,
+      descontoAutorizado: true,
+      descontoMaximoPermitidoPct: 15,
+      refMin: 350,
+      refMax: 900,
+      breakdown: [],
+      avulsosSel: [],
+      totalAvulsos: 0,
+      taxaImplantacao: 450,
+      status: null,
+      statusTexto: "",
+      regimeRotulo: "Simples Nacional",
+      atividadeRotulo: "Serviços",
+      volumeRotulo: "21 a 80 NF/mês"
+    }
+  );
+}
+
+function renderCalcSummaryTopHtml(c, X) {
+  const maxBarVal = Math.max(1, ...(X.breakdown || []).map((b) => b.valor));
+  return `
+    <div class="result-head">
+      <div class="result-badge-row">
+        <span class="result-kicker">⚡ HONORÁRIO MENSAL RECOMENDADO</span>
+        <span class="result-hours-pill">${Number(X.horasTotais).toFixed(1)} h/mês</span>
+      </div>
+      <strong class="valor-grande">${fmtBRL0(X.honorarioFinal)}</strong>
+      <span class="result-subline">
+        Receita anual: <strong>${fmtBRL0(X.honorarioFinal * 12)}/ano</strong> · Hora técnica: <strong>${fmtBRL2(X.horaTecnica)}</strong>
+      </span>
+    </div>
+
+    <div class="faixas">
+      <div class="faixa">
+        <span>Piso de custo</span>
+        <strong>${fmtBRL0(X.piso)}</strong>
+        <em>custo puro (NBC PG 01)</em>
+      </div>
+      <div class="faixa faixa-mid">
+        <span>Recomendado</span>
+        <strong class="gold">${fmtBRL0(X.sugerido)}</strong>
+        <em>custo + margem ${c.margem}%</em>
+      </div>
+      <div class="faixa">
+        <span>Ref. mercado*</span>
+        <strong>${fmtBRL0(X.refMin)}–${fmtBRL0(X.refMax)}</strong>
+        <em>faixa referencial</em>
+      </div>
+    </div>
+
+    <div class="bars-list">
+      ${(X.breakdown || [])
+        .map((b) => {
+          const pct = Math.min(100, Math.round((b.valor / maxBarVal) * 100));
+          return `
+          <div class="bar-row" title="${escapeHtml(b.nome)}: ${b.horas}h = ${fmtBRL2(b.valor)}">
+            <span class="bar-label">${escapeHtml(b.nome)}</span>
+            <div class="bar-track"><div class="bar-fill" style="width:${pct}%"></div></div>
+            <span class="bar-val">${fmtBRL0(b.valor)}</span>
+          </div>
+        `;
+        })
+        .join("")}
+    </div>
+
+    ${
+      X.totalAvulsos > 0 || X.taxaImplantacao > 0
+        ? `
+      <div class="setup-fee-banner">
+        <span>+ Implantação e Avulsos (cobrança única)</span>
+        <strong class="gold">${fmtBRL0(X.totalAvulsos + X.taxaImplantacao)}</strong>
+      </div>
+    `
+        : ""
+    }
+  `;
+}
+
+function renderCalcDiscFeedbackHtml(X) {
+  return !X.descontoAutorizado
+    ? `<span style="font-size:11px;color:var(--danger);font-weight:600">⚠️ Acima da sua alçada (${X.descontoMaximoPermitidoPct}%) ou abaixo do piso!</span>`
+    : `<span style="font-size:10.5px;color:var(--muted)">Alçada máx. autorizada: ${X.descontoMaximoPermitidoPct}%</span>`;
+}
+
+function renderCalcStatusZoneHtml(X) {
+  if (!X.status) return "";
+  const statusColors = {
+    aviltamento: "var(--danger)",
+    abaixo: "#F59E0B",
+    ok: "var(--ok)",
+    acima: "var(--ok)"
+  };
+  const col = statusColors[X.status] || "var(--gold)";
+  return `
+    <div style="border:1px solid ${col};color:${col};border-radius:10px;padding:10px 12px;font-size:12px;background:rgba(255,255,255,0.02)">
+      <strong>Diagnóstico de Viabilidade:</strong> ${escapeHtml(X.statusTexto)}
+    </div>
+  `;
+}
+
+function renderCalcElementsGridHtml(c, X) {
+  return `
+    <div class="kpi-card"><span>Regime / atividade</span><strong style="font-size:14px">${escapeHtml(X.regimeRotulo)} · ${escapeHtml(X.atividadeRotulo)}</strong></div>
+    <div class="kpi-card"><span>Faturamento mensal</span><strong style="font-size:14px">${fmtBRL0(c.faturamento)}</strong></div>
+    <div class="kpi-card"><span>Funcionários / sócios</span><strong style="font-size:14px">${c.funcionarios} / ${c.socios}</strong></div>
+    <div class="kpi-card"><span>Volume fiscal</span><strong style="font-size:14px">${escapeHtml(X.volumeRotulo)}</strong></div>
+    <div class="kpi-card"><span>Horas técnicas/mês</span><strong style="font-size:14px">${Number(X.horasTotais).toFixed(1)} h</strong></div>
+    <div class="kpi-card"><span>Hora técnica aplicada</span><strong style="font-size:14px">${fmtBRL2(X.horaTecnica)}</strong></div>
+    <div class="kpi-card"><span>Piso de Custo</span><strong style="font-size:14px">${fmtBRL2(X.piso)}</strong></div>
+    <div class="kpi-card"><span>Honorário Final</span><strong class="gold" style="font-size:16px">${fmtBRL2(X.honorarioFinal)}</strong></div>
+  `;
+}
+
 function renderCalculadoraView() {
   const pv = STATE.parameters?.activeVersion || {};
   const regimes = pv.regimes || {
@@ -925,41 +1109,15 @@ function renderCalculadoraView() {
   const avulsosList = (STATE.parameters?.plansServices || []).filter((p) => p.item_type === "servico_avulso");
 
   const c = STATE.calc;
-  const X = STATE.calcResult || {
-    custoHora: 87.5,
-    horaTecnica: 113.75,
-    horasTotais: 5.9,
-    piso: 516.25,
-    sugerido: 671.12,
-    honorarioFinal: 671.12,
-    descontoPct: 0,
-    valorDesconto: 0,
-    descontoAutorizado: true,
-    refMin: 350,
-    refMax: 900,
-    breakdown: [],
-    avulsosSel: [],
-    totalAvulsos: 0,
-    taxaImplantacao: 450,
-    status: null,
-    statusTexto: ""
-  };
-
-  const maxBarVal = Math.max(1, ...X.breakdown.map((b) => b.valor));
-  const statusColors = {
-    aviltamento: "var(--danger)",
-    abaixo: "#E0A12F",
-    ok: "var(--ok)",
-    acima: "var(--ok)"
-  };
+  const X = getCalcSafeResult();
 
   return `
-    <div class="card" style="margin-bottom:18px">
-      <div class="card-body" style="padding:14px 16px">
+    <div class="card calc-toolbar-card" style="margin-bottom:18px">
+      <div class="card-body" style="padding:14px 18px">
         <div class="tres" style="align-items:end">
           <div class="campo">
             <label class="campo-label">
-              <span>🔗 Importar Lead / Oportunidade do CRM (Evita Redigitação)</span>
+              <span>🔗 Importar Lead / Oportunidade do CRM (Sem Redigitação)</span>
             </label>
             <select onchange="importOpportunityIntoCalculator(this.value)">
               <option value="">-- Selecionar oportunidade do CRM ou simular livremente --</option>
@@ -977,7 +1135,7 @@ function renderCalculadoraView() {
 
           <div class="campo">
             <label class="campo-label">Título da Simulação / Empresa</label>
-            <input type="text" value="${escapeHtml(c.companyName || c.title)}" onchange="updateCalcField('companyName', this.value)" placeholder="Nome da empresa ou simulação" />
+            <input type="text" value="${escapeHtml(c.companyName || c.title)}" oninput="STATE.calc.companyName=this.value" placeholder="Nome da empresa ou simulação" />
           </div>
 
           <div style="display:flex;gap:8px;flex-wrap:wrap">
@@ -995,31 +1153,31 @@ function renderCalculadoraView() {
           <div class="card-head">
             <span class="card-icon">⚙️</span>
             <div class="card-titles">
-              <span class="card-title">Configuração do escritório</span>
-              <span class="card-sub">Define o custo real da sua hora (Sincronizado com Parâmetros v${pv.version_number || 1})</span>
+              <span class="card-title">1. Configuração do Escritório</span>
+              <span class="card-sub">Define o custo real da hora técnica (Sincronizado com Parâmetros v${pv.version_number || 1})</span>
             </div>
           </div>
           <div class="card-body">
             <div class="campo">
               <span class="campo-label">
                 <span class="campo-label-left">Custo fixo mensal <span class="help-tip" title="${escapeHtml(HELP_TEXTS.custoFixo)}">?</span></span>
-                <span class="campo-hint">aluguel, equipe, software</span>
+                <span class="campo-hint">aluguel, folha interna, sistemas</span>
               </span>
               <div class="prefixo">
                 <span>R$</span>
-                <input type="number" value="${c.custoFixo}" onchange="updateCalcField('custoFixo', Number(this.value))" />
+                <input id="inp-calc-custoFixo" type="number" value="${c.custoFixo}" oninput="updateCalcFieldLive('custoFixo', Number(this.value))" />
               </div>
             </div>
 
             <div class="dois">
               <div class="campo">
                 <span class="campo-label">
-                  <span class="campo-label-left">Horas produtivas/mês da equipe <span class="help-tip" title="${escapeHtml(HELP_TEXTS.horasProdutivas)}">?</span></span>
+                  <span class="campo-label-left">Horas produtivas/mês <span class="help-tip" title="${escapeHtml(HELP_TEXTS.horasProdutivas)}">?</span></span>
                 </span>
                 <div class="stepper">
-                  <button type="button" onclick="updateCalcField('horasProdutivas', Math.max(10, cHoras() - 10))">−</button>
-                  <input type="number" value="${c.horasProdutivas}" onchange="updateCalcField('horasProdutivas', Number(this.value))" />
-                  <button type="button" onclick="updateCalcField('horasProdutivas', cHoras() + 10)">+</button>
+                  <button type="button" onclick="stepCalcField('horasProdutivas', -10, 10)">−</button>
+                  <input id="inp-calc-horasProdutivas" type="number" value="${c.horasProdutivas}" oninput="updateCalcFieldLive('horasProdutivas', Number(this.value))" />
+                  <button type="button" onclick="stepCalcField('horasProdutivas', 10, 10)">+</button>
                 </div>
               </div>
 
@@ -1028,9 +1186,9 @@ function renderCalculadoraView() {
                   <span class="campo-label-left">Margem de lucro alvo (%) <span class="help-tip" title="${escapeHtml(HELP_TEXTS.margem)}">?</span></span>
                 </span>
                 <div class="stepper">
-                  <button type="button" onclick="updateCalcField('margem', Math.max(0, STATE.calc.margem - 5))">−</button>
-                  <input type="number" value="${c.margem}" onchange="updateCalcField('margem', Number(this.value))" />
-                  <button type="button" onclick="updateCalcField('margem', STATE.calc.margem + 5)">+</button>
+                  <button type="button" onclick="stepCalcField('margem', -5, 0)">−</button>
+                  <input id="inp-calc-margem" type="number" value="${c.margem}" oninput="updateCalcFieldLive('margem', Number(this.value))" />
+                  <button type="button" onclick="stepCalcField('margem', 5, 0)">+</button>
                 </div>
               </div>
             </div>
@@ -1038,11 +1196,11 @@ function renderCalculadoraView() {
             <div class="mini-stats">
               <div>
                 <span>Custo / hora</span>
-                <strong>${fmtBRL2(X.custoHora)}</strong>
+                <strong id="calc-mini-custo-hora">${fmtBRL2(X.custoHora)}</strong>
               </div>
               <div>
                 <span>Hora técnica</span>
-                <strong class="gold">${fmtBRL2(X.horaTecnica)}</strong>
+                <strong id="calc-mini-hora-tecnica" class="gold">${fmtBRL2(X.horaTecnica)}</strong>
               </div>
             </div>
           </div>
@@ -1052,8 +1210,8 @@ function renderCalculadoraView() {
           <div class="card-head">
             <span class="card-icon">🏢</span>
             <div class="card-titles">
-              <span class="card-title">Perfil do cliente</span>
-              <span class="card-sub">${c.companyName ? `Cliente ativo: ${escapeHtml(c.companyName)} (${escapeHtml(c.cpfCnpj || "Sem CNPJ")})` : "Dimensionamento operacional e tributário"}</span>
+              <span class="card-title">2. Perfil Tributário e Operacional do Cliente</span>
+              <span class="card-sub">${c.companyName ? `Cliente ativo: ${escapeHtml(c.companyName)} (${escapeHtml(c.cpfCnpj || "Sem CNPJ")})` : "Dimensionamento de risco, porte e volume"}</span>
             </div>
           </div>
           <div class="card-body">
@@ -1076,7 +1234,7 @@ function renderCalculadoraView() {
 
             <div class="campo">
               <span class="campo-label">
-                <span class="campo-label-left">Atividade <span class="help-tip" title="${escapeHtml(HELP_TEXTS.atividade)}">?</span></span>
+                <span class="campo-label-left">Atividade econômica <span class="help-tip" title="${escapeHtml(HELP_TEXTS.atividade)}">?</span></span>
               </span>
               <div class="chips">
                 ${Object.entries(activities)
@@ -1095,19 +1253,29 @@ function renderCalculadoraView() {
               <div class="campo">
                 <span class="campo-label">
                   <span class="campo-label-left">Faturamento mensal médio <span class="help-tip" title="${escapeHtml(HELP_TEXTS.faturamento)}">?</span></span>
-                  <span class="campo-hint">movimento e risco</span>
+                  <span id="lbl-fat-val" class="campo-hint" style="color:var(--gold);font-style:normal;font-weight:700">${fmtBRL0(c.faturamento)}</span>
                 </span>
                 <div class="prefixo">
                   <span>R$</span>
-                  <input type="number" value="${c.faturamento}" onchange="updateCalcField('faturamento', Number(this.value))" />
+                  <input id="inp-calc-faturamento" type="number" value="${c.faturamento}" oninput="updateCalcFieldLive('faturamento', Number(this.value))" />
                 </div>
+                <input
+                  id="rng-calc-faturamento"
+                  type="range"
+                  class="calc-range-slider"
+                  min="0"
+                  max="1500000"
+                  step="5000"
+                  value="${Math.min(1500000, Number(c.faturamento) || 0)}"
+                  oninput="updateCalcFieldLive('faturamento', Number(this.value), true)"
+                />
               </div>
 
               <div class="campo">
                 <span class="campo-label">
                   <span class="campo-label-left">Complexidade operacional</span>
                 </span>
-                <select onchange="updateCalcField('complexidade', this.value)">
+                <select onchange="updateCalcFieldLive('complexidade', this.value)">
                   ${Object.entries(complexityLevels)
                     .map(
                       ([k, cl]) => `
@@ -1125,9 +1293,9 @@ function renderCalculadoraView() {
                   <span class="campo-label-left">Funcionários <span class="help-tip" title="${escapeHtml(HELP_TEXTS.funcionarios)}">?</span></span>
                 </span>
                 <div class="stepper">
-                  <button type="button" onclick="updateCalcField('funcionarios', Math.max(0, STATE.calc.funcionarios - 1))">−</button>
-                  <input type="number" value="${c.funcionarios}" onchange="updateCalcField('funcionarios', Number(this.value))" />
-                  <button type="button" onclick="updateCalcField('funcionarios', STATE.calc.funcionarios + 1)">+</button>
+                  <button type="button" onclick="stepCalcField('funcionarios', -1, 0)">−</button>
+                  <input id="inp-calc-funcionarios" type="number" value="${c.funcionarios}" oninput="updateCalcFieldLive('funcionarios', Number(this.value))" />
+                  <button type="button" onclick="stepCalcField('funcionarios', 1, 0)">+</button>
                 </div>
               </div>
 
@@ -1136,9 +1304,9 @@ function renderCalculadoraView() {
                   <span class="campo-label-left">Sócios <span class="help-tip" title="${escapeHtml(HELP_TEXTS.socios)}">?</span></span>
                 </span>
                 <div class="stepper">
-                  <button type="button" onclick="updateCalcField('socios', Math.max(0, STATE.calc.socios - 1))">−</button>
-                  <input type="number" value="${c.socios}" onchange="updateCalcField('socios', Number(this.value))" />
-                  <button type="button" onclick="updateCalcField('socios', STATE.calc.socios + 1)">+</button>
+                  <button type="button" onclick="stepCalcField('socios', -1, 0)">−</button>
+                  <input id="inp-calc-socios" type="number" value="${c.socios}" oninput="updateCalcFieldLive('socios', Number(this.value))" />
+                  <button type="button" onclick="stepCalcField('socios', 1, 0)">+</button>
                 </div>
               </div>
 
@@ -1147,9 +1315,9 @@ function renderCalculadoraView() {
                   <span class="campo-label-left">Filiais / IE <span class="help-tip" title="${escapeHtml(HELP_TEXTS.filiais)}">?</span></span>
                 </span>
                 <div class="stepper">
-                  <button type="button" onclick="updateCalcField('filiais', Math.max(0, STATE.calc.filiais - 1))">−</button>
-                  <input type="number" value="${c.filiais}" onchange="updateCalcField('filiais', Number(this.value))" />
-                  <button type="button" onclick="updateCalcField('filiais', STATE.calc.filiais + 1)">+</button>
+                  <button type="button" onclick="stepCalcField('filiais', -1, 0)">−</button>
+                  <input id="inp-calc-filiais" type="number" value="${c.filiais}" oninput="updateCalcFieldLive('filiais', Number(this.value))" />
+                  <button type="button" onclick="stepCalcField('filiais', 1, 0)">+</button>
                 </div>
               </div>
             </div>
@@ -1158,7 +1326,7 @@ function renderCalculadoraView() {
               <span class="campo-label">
                 <span class="campo-label-left">Volume de documentos fiscais <span class="help-tip" title="${escapeHtml(HELP_TEXTS.volume)}">?</span></span>
               </span>
-              <select onchange="updateCalcField('volume', Number(this.value))">
+              <select onchange="updateCalcFieldLive('volume', Number(this.value))">
                 ${brackets
                   .map(
                     (b, idx) => `
@@ -1178,7 +1346,7 @@ function renderCalculadoraView() {
                   .map((ob) => {
                     const isOn = !!c.obrigacoes[ob.id];
                     return `
-                    <button type="button" class="check ${isOn ? "check-on" : ""}" onclick="toggleCalcObrigacao('${ob.id}')">
+                    <button type="button" class="check ${isOn ? "check-on" : ""}" onclick="toggleCalcObrigacao('${ob.id}', this)">
                       <span class="box">${isOn ? "✓" : ""}</span>
                       <span style="flex:1">${escapeHtml(ob.rotulo)}</span>
                       <span style="font-size:11.5px;color:var(--muted)">+${ob.horas}h/mês</span>
@@ -1195,14 +1363,14 @@ function renderCalculadoraView() {
           <div class="card-head">
             <span class="card-icon">📦</span>
             <div class="card-titles">
-              <span class="card-title">Planos, Pacotes e Serviços Recorrentes do Escritório</span>
+              <span class="card-title">3. Planos, Pacotes e Serviços Recorrentes do Escritório</span>
               <span class="card-sub">Selecione o pacote comercial e serviços mensais adicionais</span>
             </div>
           </div>
           <div class="card-body">
             <div class="campo">
               <label class="campo-label">Plano / Pacote Comercial</label>
-              <select onchange="updateCalcField('selectedPlanId', this.value)">
+              <select onchange="updateCalcFieldLive('selectedPlanId', this.value)">
                 <option value="">Padrão Técnico (Cálculo Puro por Horas NBC PG 01)</option>
                 ${plans
                   .map(
@@ -1226,7 +1394,7 @@ function renderCalculadoraView() {
                     .map((srv) => {
                       const on = c.servicosRecorrentesIds.includes(srv.id);
                       return `
-                      <button type="button" class="check ${on ? "check-on" : ""}" onclick="toggleRecurringService('${srv.id}')">
+                      <button type="button" class="check ${on ? "check-on" : ""}" onclick="toggleRecurringService('${srv.id}', this)">
                         <span class="box">${on ? "✓" : ""}</span>
                         <span style="flex:1">${escapeHtml(srv.name)}</span>
                         <span style="font-size:11.5px;color:var(--muted)">+${srv.estimated_hours}h</span>
@@ -1246,7 +1414,7 @@ function renderCalculadoraView() {
           <div class="card-head">
             <span class="card-icon">✨</span>
             <div class="card-titles">
-              <span class="card-title">Serviços avulsos e Implantação</span>
+              <span class="card-title">4. Serviços Avulsos e Implantação</span>
               <span class="card-sub">Cobrança única — valores editáveis conforme Res. CFC 1.590/2020</span>
             </div>
           </div>
@@ -1255,7 +1423,7 @@ function renderCalculadoraView() {
               <label class="campo-label">Taxa de Implantação / Migração Inicial (R$)</label>
               <div class="prefixo">
                 <span>R$</span>
-                <input type="number" value="${c.taxaImplantacao}" onchange="updateCalcField('taxaImplantacao', Number(this.value))" />
+                <input id="inp-calc-taxaImplantacao" type="number" value="${c.taxaImplantacao}" oninput="updateCalcFieldLive('taxaImplantacao', Number(this.value))" />
               </div>
             </div>
 
@@ -1277,7 +1445,7 @@ function renderCalculadoraView() {
                         ? `
                       <div class="prefixo" style="max-width:135px">
                         <span>R$</span>
-                        <input type="number" value="${curVal}" onchange="updateCalcAvulsoVal('${key}', Number(this.value))" />
+                        <input type="number" value="${curVal}" oninput="updateCalcAvulsoVal('${key}', Number(this.value))" />
                       </div>
                     `
                         : ""
@@ -1294,67 +1462,17 @@ function renderCalculadoraView() {
       <!-- COLUNA DIREITA: RESULTADO + BOTÃO GERAR PROPOSTA -->
       <div class="col-result">
         <div class="result-sticky">
-          <div class="result-head">
-            <span style="font-size:12px;color:var(--muted)">⚡ Honorário mensal recomendado</span>
-            <strong class="valor-grande">${fmtBRL0(X.honorarioFinal)}</strong>
-            <span style="font-size:11.5px;color:var(--muted)">
-              ${fmtBRL0(X.honorarioFinal * 12)} / ano · ${Number(X.horasTotais).toFixed(1)} h/mês estimadas
-            </span>
+          <div id="calc-summary-top-zone">
+            ${renderCalcSummaryTopHtml(c, X)}
           </div>
-
-          <div class="faixas">
-            <div class="faixa">
-              <span>Piso de custo</span>
-              <strong>${fmtBRL0(X.piso)}</strong>
-              <em>não cobrar abaixo</em>
-            </div>
-            <div class="faixa faixa-mid">
-              <span>Recomendado</span>
-              <strong class="gold">${fmtBRL0(X.sugerido)}</strong>
-              <em>custo + margem ${c.margem}%</em>
-            </div>
-            <div class="faixa">
-              <span>Ref. mercado*</span>
-              <strong>${fmtBRL0(X.refMin)}–${fmtBRL0(X.refMax)}</strong>
-              <em>sindicato (sugestivo)</em>
-            </div>
-          </div>
-
-          <div class="bars-list">
-            ${X.breakdown
-              .map((b) => {
-                const pct = Math.min(100, Math.round((b.valor / maxBarVal) * 100));
-                return `
-                <div class="bar-row" title="${escapeHtml(b.nome)}: ${b.horas}h = ${fmtBRL2(b.valor)}">
-                  <span class="bar-label">${escapeHtml(b.nome)}</span>
-                  <div class="bar-track"><div class="bar-fill" style="width:${pct}%"></div></div>
-                  <span class="bar-val">${fmtBRL0(b.valor)}</span>
-                </div>
-              `;
-              })
-              .join("")}
-          </div>
-
-          ${
-            X.totalAvulsos > 0 || X.taxaImplantacao > 0
-              ? `
-            <div style="display:flex;justify-content:space-between;background:var(--navy-3);border:1px dashed var(--line);border-radius:10px;padding:10px 12px;font-size:12.5px">
-              <span>+ Implantação e Avulsos (cobrança única)</span>
-              <strong class="gold">${fmtBRL0(X.totalAvulsos + X.taxaImplantacao)}</strong>
-            </div>
-          `
-              : ""
-          }
 
           <div class="dois" style="border-top:1px solid var(--line);padding-top:12px">
             <div class="campo">
               <span class="campo-label">Desconto Comercial (%)</span>
-              <input type="number" min="0" max="50" step="0.5" value="${c.descontoPct}" onchange="updateCalcField('descontoPct', Number(this.value))" />
-              ${
-                !X.descontoAutorizado
-                  ? `<span style="font-size:11px;color:var(--danger)">⚠️ Acima da sua alçada (${X.descontoMaximoPermitidoPct}%) ou abaixo do piso!</span>`
-                  : `<span style="font-size:10.5px;color:var(--muted)">Alçada máx.: ${X.descontoMaximoPermitidoPct}%</span>`
-              }
+              <input id="inp-calc-descontoPct" type="number" min="0" max="50" step="0.5" value="${c.descontoPct}" oninput="updateCalcFieldLive('descontoPct', Number(this.value))" />
+              <div id="calc-disc-feedback">
+                ${renderCalcDiscFeedbackHtml(X)}
+              </div>
             </div>
 
             <div class="campo">
@@ -1363,20 +1481,14 @@ function renderCalculadoraView() {
               </span>
               <div class="prefixo">
                 <span>R$</span>
-                <input type="number" value="${c.precoPretendido || ""}" placeholder="0" onchange="updateCalcField('precoPretendido', Number(this.value))" />
+                <input id="inp-calc-precoPretendido" type="number" value="${c.precoPretendido || ""}" placeholder="0" oninput="updateCalcFieldLive('precoPretendido', Number(this.value))" />
               </div>
             </div>
           </div>
 
-          ${
-            X.status
-              ? `
-            <div style="border:1px solid ${statusColors[X.status]};color:${statusColors[X.status]};border-radius:9px;padding:10px 12px;font-size:12px;background:rgba(255,255,255,0.02)">
-              <strong>Diagnóstico de Viabilidade:</strong> ${escapeHtml(X.statusTexto)}
-            </div>
-          `
-              : ""
-          }
+          <div id="calc-status-zone">
+            ${renderCalcStatusZoneHtml(X)}
+          </div>
 
           <button type="button" class="btn-primary btn-cta-hero" onclick="convertSimulationToProposal()">
             📄 GERAR PROPOSTA
@@ -1390,15 +1502,8 @@ function renderCalculadoraView() {
       <p style="font-size:12.5px;color:var(--muted);margin-bottom:14px">
         A Res. CFC 1.590/2020 exige contrato escrito discriminando o valor de cada serviço. Os elementos abaixo justificam tecnicamente o honorário conforme a NBC PG 01.
       </p>
-      <div class="quatro">
-        <div class="kpi-card"><span>Regime / atividade</span><strong style="font-size:14px">${escapeHtml(X.regimeRotulo)} · ${escapeHtml(X.atividadeRotulo)}</strong></div>
-        <div class="kpi-card"><span>Faturamento mensal</span><strong style="font-size:14px">${fmtBRL0(c.faturamento)}</strong></div>
-        <div class="kpi-card"><span>Funcionários / sócios</span><strong style="font-size:14px">${c.funcionarios} / ${c.socios}</strong></div>
-        <div class="kpi-card"><span>Volume fiscal</span><strong style="font-size:14px">${escapeHtml(X.volumeRotulo)}</strong></div>
-        <div class="kpi-card"><span>Horas técnicas/mês</span><strong style="font-size:14px">${Number(X.horasTotais).toFixed(1)} h</strong></div>
-        <div class="kpi-card"><span>Hora técnica aplicada</span><strong style="font-size:14px">${fmtBRL2(X.horaTecnica)}</strong></div>
-        <div class="kpi-card"><span>Piso de Custo</span><strong style="font-size:14px">${fmtBRL2(X.piso)}</strong></div>
-        <div class="kpi-card"><span>Honorário Final</span><strong class="gold" style="font-size:16px">${fmtBRL2(X.honorarioFinal)}</strong></div>
+      <div id="calc-elements-grid" class="quatro">
+        ${renderCalcElementsGridHtml(c, X)}
       </div>
     </section>
 
@@ -1462,40 +1567,108 @@ function cHoras() {
   return Number(STATE.calc.horasProdutivas) || 320;
 }
 
-async function updateCalcField(field, value) {
+/**
+ * Atualização cirúrgica de alta performance (< 0.1ms) nos painéis de resultado da calculadora
+ * sem reconstruir os inputs onde o usuário está digitando ou arrastando!
+ */
+function refreshCalcLiveOutputs() {
+  const X = runCalculationSync();
+  const c = STATE.calc;
+
+  const topZone = document.getElementById("calc-summary-top-zone");
+  if (topZone) topZone.innerHTML = renderCalcSummaryTopHtml(c, X);
+
+  const discFb = document.getElementById("calc-disc-feedback");
+  if (discFb) discFb.innerHTML = renderCalcDiscFeedbackHtml(X);
+
+  const statusZone = document.getElementById("calc-status-zone");
+  if (statusZone) statusZone.innerHTML = renderCalcStatusZoneHtml(X);
+
+  const elemGrid = document.getElementById("calc-elements-grid");
+  if (elemGrid) elemGrid.innerHTML = renderCalcElementsGridHtml(c, X);
+
+  const chEl = document.getElementById("calc-mini-custo-hora");
+  if (chEl) chEl.textContent = fmtBRL2(X.custoHora);
+
+  const htEl = document.getElementById("calc-mini-hora-tecnica");
+  if (htEl) htEl.textContent = fmtBRL2(X.horaTecnica);
+
+  const fatLbl = document.getElementById("lbl-fat-val");
+  if (fatLbl) fatLbl.textContent = fmtBRL0(c.faturamento);
+}
+
+function updateCalcFieldLive(field, value, syncNumberInput = false) {
   STATE.calc[field] = value;
-  await runCalculation();
+  if (field === "faturamento") {
+    if (syncNumberInput) {
+      const numInp = document.getElementById("inp-calc-faturamento");
+      if (numInp) numInp.value = value;
+    } else {
+      const rngInp = document.getElementById("rng-calc-faturamento");
+      if (rngInp) rngInp.value = Math.min(1500000, Number(value) || 0);
+    }
+  }
+  refreshCalcLiveOutputs();
+}
+
+function stepCalcField(field, delta, minVal = 0) {
+  const cur = Number(STATE.calc[field]) || 0;
+  const next = Math.max(minVal, cur + delta);
+  STATE.calc[field] = next;
+  const inp = document.getElementById(`inp-calc-${field}`);
+  if (inp) inp.value = next;
+  refreshCalcLiveOutputs();
+}
+
+function updateCalcField(field, value) {
+  STATE.calc[field] = value;
+  runCalculationSync();
   renderApp();
 }
 
-async function toggleCalcObrigacao(obId) {
+function toggleCalcObrigacao(obId, btnEl = null) {
   STATE.calc.obrigacoes[obId] = !STATE.calc.obrigacoes[obId];
-  await runCalculation();
+  if (btnEl) {
+    const isOn = !!STATE.calc.obrigacoes[obId];
+    btnEl.classList.toggle("check-on", isOn);
+    const box = btnEl.querySelector(".box");
+    if (box) box.textContent = isOn ? "✓" : "";
+    refreshCalcLiveOutputs();
+    return;
+  }
+  runCalculationSync();
   renderApp();
 }
 
-async function toggleRecurringService(srvId) {
+function toggleRecurringService(srvId, btnEl = null) {
   const idx = STATE.calc.servicosRecorrentesIds.indexOf(srvId);
   if (idx >= 0) STATE.calc.servicosRecorrentesIds.splice(idx, 1);
   else STATE.calc.servicosRecorrentesIds.push(srvId);
-  await runCalculation();
+  if (btnEl) {
+    const isOn = STATE.calc.servicosRecorrentesIds.includes(srvId);
+    btnEl.classList.toggle("check-on", isOn);
+    const box = btnEl.querySelector(".box");
+    if (box) box.textContent = isOn ? "✓" : "";
+    refreshCalcLiveOutputs();
+    return;
+  }
+  runCalculationSync();
   renderApp();
 }
 
-async function toggleCalcAvulso(avId, defaultVal) {
+function toggleCalcAvulso(avId, defaultVal) {
   if (STATE.calc.avulsos[avId]) {
     delete STATE.calc.avulsos[avId];
   } else {
     STATE.calc.avulsos[avId] = { valor: defaultVal };
   }
-  await runCalculation();
+  runCalculationSync();
   renderApp();
 }
 
-async function updateCalcAvulsoVal(avId, val) {
+function updateCalcAvulsoVal(avId, val) {
   STATE.calc.avulsos[avId] = { valor: val };
-  await runCalculation();
-  renderApp();
+  refreshCalcLiveOutputs();
 }
 
 async function importOpportunityIntoCalculator(oppId) {
