@@ -1426,6 +1426,29 @@ async function handleBrowserApiRequest(path, options = {}, currentTenantId = "te
     return { ok: true };
   }
 
+  // DELETE /api/crm/opportunities/:id (Excluir / Retirar um Lead específico)
+  if (method === "DELETE" && cleanPath.startsWith("/api/crm/opportunities/")) {
+    const oppId = cleanPath.split("/")[4];
+    db.opportunities = db.opportunities.filter((o) => !(o.id === oppId && o.tenant_id === tenantId));
+    db.diagnostics = db.diagnostics.filter((d) => !(d.opportunity_id === oppId && d.tenant_id === tenantId));
+    db.stageHistory = db.stageHistory.filter((h) => !(h.opportunity_id === oppId && h.tenant_id === tenantId));
+    db.activities = db.activities.filter((a) => !(a.opportunity_id === oppId && a.tenant_id === tenantId));
+    logAuditLocal("DELETE_LEAD", "opportunity", oppId);
+    saveBrowserDB(db);
+    return { ok: true, deletedId: oppId };
+  }
+
+  // DELETE /api/crm/opportunities (Retirar / Excluir todos os Leads do escritório atual)
+  if (method === "DELETE" && cleanPath === "/api/crm/opportunities") {
+    db.opportunities = db.opportunities.filter((o) => o.tenant_id !== tenantId);
+    db.diagnostics = db.diagnostics.filter((d) => d.tenant_id !== tenantId);
+    db.stageHistory = db.stageHistory.filter((h) => h.tenant_id !== tenantId);
+    db.activities = db.activities.filter((a) => a.tenant_id !== tenantId);
+    logAuditLocal("CLEAR_ALL_LEADS", "opportunity", tenantId);
+    saveBrowserDB(db);
+    return { ok: true };
+  }
+
   if (cleanPath.startsWith("/api/crm/opportunities/") && cleanPath.endsWith("/diagnostic")) {
     const oppId = cleanPath.split("/")[4];
     const opp = db.opportunities.find((o) => o.id === oppId && o.tenant_id === tenantId);

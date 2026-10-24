@@ -2383,6 +2383,27 @@ class SaaSContabilRequestHandler(BaseHTTPRequestHandler):
                 self._send_json(200, {"ok": True})
                 return
 
+            if path.startswith("/api/crm/opportunities/"):
+                opp_id = path.split("/")[4]
+                conn.execute("DELETE FROM commercial_diagnostics WHERE opportunity_id = ? AND tenant_id = ?", (opp_id, tenant_id))
+                conn.execute("DELETE FROM opportunity_stage_history WHERE opportunity_id = ? AND tenant_id = ?", (opp_id, tenant_id))
+                conn.execute("DELETE FROM crm_activities WHERE opportunity_id = ? AND tenant_id = ?", (opp_id, tenant_id))
+                conn.execute("DELETE FROM opportunities WHERE id = ? AND tenant_id = ?", (opp_id, tenant_id))
+                log_audit(conn, tenant_id, ctx["user_id"], "DELETE_LEAD", "opportunity", opp_id, {})
+                conn.commit()
+                self._send_json(200, {"ok": True, "deletedId": opp_id})
+                return
+
+            if path == "/api/crm/opportunities":
+                conn.execute("DELETE FROM commercial_diagnostics WHERE tenant_id = ?", (tenant_id,))
+                conn.execute("DELETE FROM opportunity_stage_history WHERE tenant_id = ?", (tenant_id,))
+                conn.execute("DELETE FROM crm_activities WHERE tenant_id = ?", (tenant_id,))
+                conn.execute("DELETE FROM opportunities WHERE tenant_id = ?", (tenant_id,))
+                log_audit(conn, tenant_id, ctx["user_id"], "CLEAR_ALL_LEADS", "opportunity", tenant_id, {})
+                conn.commit()
+                self._send_json(200, {"ok": True})
+                return
+
             self._send_json(404, {"ok": False, "error": f"Endpoint DELETE não encontrado: {path}"})
         finally:
             conn.close()

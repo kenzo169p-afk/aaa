@@ -1119,18 +1119,25 @@ function renderCalculadoraView() {
             <label class="campo-label">
               <span>🔗 Importar Lead / Oportunidade do CRM (Sem Redigitação)</span>
             </label>
-            <select onchange="importOpportunityIntoCalculator(this.value)">
-              <option value="">-- Selecionar oportunidade do CRM ou simular livremente --</option>
-              ${STATE.crm.opportunities
-                .map(
-                  (op) => `
-                <option value="${op.id}" ${c.opportunityId === op.id ? "selected" : ""}>
-                  ${escapeHtml(op.company_name)} (${escapeHtml(op.contact_name)}) — ${fmtBRL0(op.estimated_revenue)}/mês
-                </option>
-              `
-                )
-                .join("")}
-            </select>
+            <div style="display:flex;gap:6px;align-items:center">
+              <select style="flex:1" onchange="importOpportunityIntoCalculator(this.value)">
+                <option value="">-- Selecionar oportunidade do CRM ou simular livremente --</option>
+                ${STATE.crm.opportunities
+                  .map(
+                    (op) => `
+                  <option value="${op.id}" ${c.opportunityId === op.id ? "selected" : ""}>
+                    ${escapeHtml(op.company_name)} (${escapeHtml(op.contact_name)}) — ${fmtBRL0(op.estimated_revenue)}/mês
+                  </option>
+                `
+                  )
+                  .join("")}
+              </select>
+              ${
+                c.opportunityId
+                  ? `<button type="button" class="btn-danger" onclick="deleteOpportunityLead('${c.opportunityId}')" title="Retirar / Excluir este Lead do CRM">🗑️ Excluir Lead</button>`
+                  : ""
+              }
+            </div>
           </div>
 
           <div class="campo">
@@ -2403,7 +2410,12 @@ function renderCRMView() {
         </button>
       </div>
 
-      <div style="display:flex;gap:8px">
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        ${
+          STATE.crm.opportunities.length > 0
+            ? `<button class="btn-danger" onclick="openClearAllLeadsModal()">🗑️ Retirar Todos os Leads (${STATE.crm.opportunities.length})</button>`
+            : ""
+        }
         <button class="btn-primary" onclick="openNewLeadModal()">+ Novo Lead / Oportunidade</button>
       </div>
     </div>
@@ -2415,7 +2427,7 @@ function renderCRMView() {
 function renderCRMKanbanTab() {
   return `
     <p style="font-size:12.5px;color:var(--muted);margin-bottom:12px">
-      💡 Arraste e solte (Drag-and-Drop) no desktop ou use o seletor rápido de etapa no card (ideal para telas touch/mobile).
+      💡 Arraste e solte (Drag-and-Drop) no desktop, use o seletor rápido de etapa ou clique em <strong>🗑️ Excluir</strong> para retirar qualquer lead.
     </p>
     <div class="kanban-board">
       ${STATE.crm.stages
@@ -2441,7 +2453,10 @@ function renderCRMKanbanTab() {
                 <div class="kanban-card" draggable="true" ondragstart="event.dataTransfer.setData('text/plain', '${op.id}')">
                   <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:6px">
                     <span class="kanban-card-company">${escapeHtml(op.company_name)}</span>
-                    <span class="tag tag-gold">${fmtBRL0(op.potential_monthly_value)}/mês</span>
+                    <div style="display:flex;align-items:center;gap:4px">
+                      <span class="tag tag-gold">${fmtBRL0(op.potential_monthly_value)}/mês</span>
+                      <button type="button" class="btn-xs btn-danger-xs" onclick="deleteOpportunityLead('${op.id}')" title="Retirar / Excluir este Lead">🗑️</button>
+                    </div>
                   </div>
                   <div class="kanban-card-contact">
                     👤 ${escapeHtml(op.contact_name)} · ${escapeHtml(op.hiring_type || "Troca de contador")}
@@ -2465,7 +2480,8 @@ function renderCRMKanbanTab() {
                     <button class="btn-xs" onclick="openDiagnosticForOpp('${op.id}')">🩺 Diagnóstico</button>
                     <button class="btn-xs" onclick="sendOppToCalculator('${op.id}')">🧮 Precificar</button>
                     <button class="btn-xs" onclick="openActivityModalForOpp('${op.id}')">+ Tarefa</button>
-                    <button class="btn-xs" onclick="openStageHistoryModal('${op.id}')">🕒</button>
+                    <button class="btn-xs" onclick="openStageHistoryModal('${op.id}')" title="Histórico de Etapas">🕒</button>
+                    <button class="btn-xs btn-danger-xs" onclick="deleteOpportunityLead('${op.id}')" title="Retirar / Excluir este Lead">🗑️ Excluir</button>
                   </div>
                   <select style="font-size:11px;padding:4px 6px;margin-top:2px" onchange="moveOppViaSelect('${op.id}', this.value)">
                     ${STATE.crm.stages
@@ -2483,6 +2499,67 @@ function renderCRMKanbanTab() {
         .join("")}
     </div>
   `;
+}
+
+async function deleteOpportunityLead(oppId) {
+  if (!oppId) return;
+  const opp = STATE.crm.opportunities.find((o) => o.id === oppId);
+  const label = opp ? opp.company_name : oppId;
+  try {
+    await apiFetch(`/api/crm/opportunities/${oppId}`, { method: "DELETE" });
+    if (STATE.calc.opportunityId === oppId) {
+      STATE.calc.opportunityId = "";
+    }
+    if (STATE.selectedDiagnosticOppId === oppId) {
+      STATE.selectedDiagnosticOppId = "";
+    }
+    await loadCRMPipeline();
+    if (STATE.crmSubTab === "indicadores") {
+      await loadCRMDashboard();
+    }
+    showToast(`Lead "${label}" retirado/excluído com sucesso!`);
+    renderApp();
+  } catch (err) {
+    showToast("Erro ao excluir lead: " + err.message, true);
+  }
+}
+
+function openClearAllLeadsModal() {
+  const modal = document.getElementById("modal-container");
+  modal.innerHTML = `
+    <div class="modal-backdrop" onclick="if(event.target===this)this.remove()">
+      <div class="modal-box" style="max-width:440px">
+        <div class="modal-head">
+          <h3>🗑️ Retirar Todos os Leads do Escritório</h3>
+          <button class="btn-xs" onclick="document.getElementById('modal-container').innerHTML=''">✕</button>
+        </div>
+        <p style="font-size:13.5px;color:var(--cream)">
+          Tem certeza que deseja retirar/excluir todos os <strong>${STATE.crm.opportunities.length} leads/oportunidades</strong> deste escritório no CRM?
+        </p>
+        <div style="display:flex;justify-content:flex-end;gap:10px;margin-top:8px">
+          <button class="btn-secondary" onclick="document.getElementById('modal-container').innerHTML=''">Cancelar</button>
+          <button class="btn-danger" onclick="confirmClearAllTenantLeads()">🗑️ Sim, Excluir Todos</button>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+async function confirmClearAllTenantLeads() {
+  try {
+    await apiFetch("/api/crm/opportunities", { method: "DELETE" });
+    STATE.calc.opportunityId = "";
+    STATE.selectedDiagnosticOppId = "";
+    document.getElementById("modal-container").innerHTML = "";
+    await loadCRMPipeline();
+    if (STATE.crmSubTab === "indicadores") {
+      await loadCRMDashboard();
+    }
+    showToast("Todos os leads do escritório foram retirados!");
+    renderApp();
+  } catch (err) {
+    showToast("Erro ao limpar leads: " + err.message, true);
+  }
 }
 
 async function moveOppViaSelect(oppId, targetStageId) {
@@ -2619,7 +2696,10 @@ function renderCRMDiagnosticoTab() {
           </select>
           ${
             opp
-              ? `<button class="btn-primary" onclick="saveDiagnosticAndSendToCalc('${opp.id}')">🧮 Salvar Diagnóstico & Enviar p/ Calculadora</button>`
+              ? `
+                <button class="btn-danger" onclick="deleteOpportunityLead('${opp.id}')">🗑️ Excluir Lead</button>
+                <button class="btn-primary" onclick="saveDiagnosticAndSendToCalc('${opp.id}')">🧮 Salvar Diagnóstico & Enviar p/ Calculadora</button>
+              `
               : ""
           }
         </div>
