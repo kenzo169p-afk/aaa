@@ -1,0 +1,21 @@
+[Unit]
+Description=Plataforma SaaS de Precificacao, Propostas e CRM Contabil (Multi-Tenant)
+After=network.target
+
+[Service]
+Type=simple
+User=www-data
+Group=www-data
+WorkingDirectory=/opt/saas-contabil
+EnvironmentFile=-/opt/saas-contabil/.env
+Environment="PORT=8090"
+Environment="SAAS_DB_PATH=/var/lib/saas-contabil/saas_contabil.db"
+ExecStart=/usr/bin/python3 /opt/saas-contabil/backend/server.py
+Restart=always
+RestartSec=3
+StandardOutput=journal
+StandardError=journal
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

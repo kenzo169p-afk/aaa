@@ -387,7 +387,31 @@ class TestSaaSContabilPlatform(unittest.TestCase):
         self.assertTrue("@media (min-width: 1680px)" in css_code, "ultrawide breakpoint missing")
         self.assertTrue("100dvh" in css_code, "100dvh missing")
 
+    def test_05_hostinger_vps_readiness_and_healthcheck(self) -> None:
+        """Verifica endpoints de healthcheck da Hostinger VPS e artefatos de deploy (Docker, Nginx, Systemd, Script SSH)."""
+        st_health, res_health = self._req("GET", "/api/health")
+        self.assertEqual(st_health, 200)
+        self.assertTrue(res_health.get("ok"))
+        self.assertEqual(res_health.get("status"), "healthy")
+
+        st_hz, res_hz = self._req("GET", "/healthz")
+        self.assertEqual(st_hz, 200)
+        self.assertTrue(res_hz.get("ok"))
+
+        vps_files = [
+            os.path.join(ROOT_DIR, "Dockerfile"),
+            os.path.join(ROOT_DIR, "docker-compose.yml"),
+            os.path.join(ROOT_DIR, ".env.example"),
+            os.path.join(ROOT_DIR, "deploy", "hostinger", "nginx.conf"),
+            os.path.join(ROOT_DIR, "deploy", "hostinger", "saas-contabil.service"),
+            os.path.join(ROOT_DIR, "deploy", "hostinger", "install_hostinger_vps.sh"),
+            os.path.join(ROOT_DIR, "deploy", "hostinger", "GUIA_DEPLOY_HOSTINGER_VPS.md"),
+        ]
+        for fpath in vps_files:
+            self.assertTrue(os.path.exists(fpath), f"Arquivo de deploy Hostinger VPS ausente: {fpath}")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
 

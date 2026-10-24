@@ -464,6 +464,15 @@ class SaaSContabilRequestHandler(BaseHTTPRequestHandler):
         except Exception:
             return {}
 
+    def _get_client_ip(self) -> str:
+        forwarded = self.headers.get("X-Forwarded-For", "")
+        if forwarded:
+            return forwarded.split(",")[0].strip()
+        real_ip = self.headers.get("X-Real-IP", "")
+        if real_ip:
+            return real_ip.strip()
+        return self.client_address[0] if self.client_address else "127.0.0.1"
+
     def _get_auth_context(self, conn: Any) -> Dict[str, Any]:
         """
         Extrai o usuário autenticado via Bearer Token.
@@ -519,6 +528,19 @@ class SaaSContabilRequestHandler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         path = parsed.path
         query = parse_qs(parsed.query)
+
+        # Endpoint de Healthcheck para Hostinger VPS (Docker / Nginx / EasyPanel / Coolify)
+        if path in ("/api/health", "/healthz"):
+            self._send_json(
+                200,
+                {
+                    "ok": True,
+                    "status": "healthy",
+                    "service": "saas-contabil-vps",
+                    "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                },
+            )
+            return
 
         # Link exclusivo e seguro de proposta pública (/p/<token>)
         if path.startswith("/p/"):
@@ -605,11 +627,20 @@ class SaaSContabilRequestHandler(BaseHTTPRequestHandler):
                 self.wfile.write(data)
                 return
 
-        # Servir arquivos da pasta frontend/
+        # Servir arquivos estáticos priorizando ROOT_DIR (sempre sincronizado) e fallback em FRONTEND_DIR
         rel_path = path.lstrip("/") or "index.html"
-        full_path = os.path.join(FRONTEND_DIR, rel_path)
-        if not os.path.isfile(full_path):
-            full_path = os.path.join(FRONTEND_DIR, "index.html")
+        safe_rel = os.path.normpath(rel_path).lstrip("\\/")
+        candidate_root = os.path.join(ROOT_DIR, safe_rel)
+        candidate_front = os.path.join(FRONTEND_DIR, safe_rel)
+
+        if os.path.isfile(candidate_root) and safe_rel in ("index.html", "404.html", "styles.css", "app.js", "browser_engine.js", "favicon.svg"):
+            full_path = candidate_root
+        elif os.path.isfile(candidate_front):
+            full_path = candidate_front
+        else:
+            full_path = os.path.join(ROOT_DIR, "index.html")
+            if not os.path.isfile(full_path):
+                full_path = os.path.join(FRONTEND_DIR, "index.html")
 
         if os.path.isfile(full_path):
             mime, _ = mimetypes.guess_type(full_path)
@@ -617,6 +648,7 @@ class SaaSContabilRequestHandler(BaseHTTPRequestHandler):
                 content = f.read()
             self.send_response(200)
             self.send_header("Content-Type", f"{mime or 'text/html'}; charset=utf-8")
+            self.send_header("X-Content-Type-Options", "nosniff")
             self.send_header("Content-Length", str(len(content)))
             self.end_headers()
             self.wfile.write(content)

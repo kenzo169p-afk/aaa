@@ -1,0 +1,51 @@
+# =============================================================================
+# Docker Compose Oficial para Hostinger VPS (Ubuntu / Debian)
+# Executa o Backend Multi-Tenant + Proxy Reverso Nginx com persistência de dados
+# Uso na VPS: docker compose up -d --build
+# =============================================================================
+services:
+  saas-contabil-app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: saas_contabil_app
+    restart: unless-stopped
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      - PORT=8090
+      - SAAS_DB_PATH=/app/database/saas_contabil.db
+      - SAAS_JWT_SECRET=${SAAS_JWT_SECRET:-saas-contabil-vps-production-secret-2026}
+    volumes:
+      - saas_db_data:/app/database
+      - saas_backups:/app/backups
+    expose:
+      - "8090"
+    ports:
+      - "8090:8090"
+    networks:
+      - saas_net
+
+  saas-contabil-nginx:
+    image: nginx:1.27-alpine
+    container_name: saas_contabil_nginx
+    restart: unless-stopped
+    depends_on:
+      - saas-contabil-app
+    ports:
+      - "80:80"
+    volumes:
+      - ./deploy/hostinger/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    networks:
+      - saas_net
+
+volumes:
+  saas_db_data:
+    name: saas_contabil_db_data
+  saas_backups:
+    name: saas_contabil_backups
+
+networks:
+  saas_net:
+    driver: bridge

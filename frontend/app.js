@@ -22,7 +22,20 @@ const HELP_TEXTS = {
 
 const STATE = {
   activeNav: "calculadora",
+  uiTheme: localStorage.getItem("saas_contabil_ui_theme") || "clean", // 'clean' (Azul, Branco e Cinza) | 'dark'
+  paramSubTab: "todos", // 'todos' | 'operacional' | 'margem' | 'departamentos' | 'planos' | 'versoes'
+  paramDirty: false,
+  calcStep: "todos", // 'todos' | 'dados' | 'servicos' | 'custos' | 'resultado'
+  propostasViewMode: "ambos", // 'ambos' | 'tabela' | 'cards'
+  propostasFilter: {
+    q: "",
+    status: "",
+    cols: { doc: true, contato: true, mensal: true, implantacao: true, validade: true, versao: true }
+  },
   crmSubTab: "kanban",
+  crmViewMode: "kanban", // 'kanban' | 'lista'
+  crmFilter: { q: "", stage: "", seller: "", regime: "" },
+  drawerOppId: "",
   sidebarCollapsed: window.innerWidth < 1150,
   userToggledSidebar: false,
   runtimeMode: "detecting", // 'server_api' | 'browser_pages'
@@ -100,7 +113,7 @@ function showToast(msg, isError = false) {
   if (existing) existing.remove();
   const el = document.createElement("div");
   el.className = "toast";
-  if (isError) el.style.borderColor = "#E5544B";
+  if (isError) el.style.borderColor = "#DC2626";
   el.textContent = msg;
   document.body.appendChild(el);
   setTimeout(() => el.remove(), 3600);
@@ -141,18 +154,17 @@ window.addEventListener("resize", () => {
 });
 
 /**
- * /**
- * Roteador Híbrido Ultra-Rápido:
- * Prioriza execução instantânea em memória (0ms) no GitHub Pages / Navegador,
- * ou conecta à API Python local (porta 8080) quando ativa.
+ * Roteador Híbrido Multi-Ambiente (Hostinger VPS + GitHub Pages + Local):
+ * - Em Hostinger VPS (HTTP/HTTPS portas 80, 443, 8080, 8090 ou domínio próprio): conecta automaticamente à API Backend Python/SQLite/PostgreSQL.
+ * - No GitHub Pages (*.github.io) ou arquivo local (file://): roda 100% em memória (0ms) via Browser Engine.
  */
 async function apiFetch(path, options = {}) {
-  const isServerPort = window.location.port === "8080" && window.location.protocol.startsWith("http");
-  const useLocalEngineDirectly =
+  const isStaticOnlyHost =
     window.location.hostname.endsWith("github.io") ||
-    window.location.protocol === "file:" ||
-    STATE.runtimeMode === "browser_pages" ||
-    (!isServerPort && STATE.runtimeMode !== "server_api");
+    window.location.protocol === "file:";
+
+  const useLocalEngineDirectly =
+    isStaticOnlyHost || STATE.runtimeMode === "browser_pages";
 
   if (!useLocalEngineDirectly) {
     try {
@@ -165,7 +177,8 @@ async function apiFetch(path, options = {}) {
         headers["Authorization"] = `Bearer ${STATE.token}`;
       }
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 350);
+      const timeoutMs = STATE.runtimeMode === "server_api" ? 4000 : 900;
+      const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
       const resp = await fetch(path, { ...options, headers, signal: controller.signal });
       clearTimeout(timeoutId);
       const contentType = resp.headers.get("content-type") || "";
@@ -188,10 +201,26 @@ async function apiFetch(path, options = {}) {
 }
 
 function applyTenantTheme(tenant) {
+  if (STATE.uiTheme === "dark") {
+    document.documentElement.setAttribute("data-theme", "dark");
+  } else {
+    document.documentElement.removeAttribute("data-theme");
+  }
   if (!tenant) return;
-  const primary = tenant.primary_color || "#E5A93C";
+  const rawColor = (tenant.primary_color || "").toUpperCase();
+  const isDefaultLegacyGold = !rawColor || rawColor === "#C9A227" || rawColor === "#E5A93C";
+  const defaultPaletteColor = STATE.uiTheme === "dark" ? "#3B82F6" : "#1D4ED8";
+  const primary = isDefaultLegacyGold ? defaultPaletteColor : tenant.primary_color;
   document.documentElement.style.setProperty("--gold", primary);
   document.documentElement.style.setProperty("--gold-soft", primary);
+}
+
+function toggleUiTheme() {
+  STATE.uiTheme = STATE.uiTheme === "dark" ? "clean" : "dark";
+  localStorage.setItem("saas_contabil_ui_theme", STATE.uiTheme);
+  applyTenantTheme(STATE.tenant);
+  renderApp(true);
+  showToast(STATE.uiTheme === "clean" ? "Tema Clean (Azul, Branco e Cinza) ativado!" : "Tema Executivo Escuro ativado!");
 }
 
 /* =========================================================================
@@ -353,27 +382,137 @@ async function switchUserAccount(userId) {
 function getPageHeaderMeta() {
   const map = {
     parametros: {
+      breadcrumb: "Parâmetros de Precificação",
       title: "Parâmetros de Precificação",
-      sub: "Central de custos, hora técnica, departamentos, regimes, planos e versionamento por escritório"
+      sub: "Central de custos, hora técnica, departamentos, regimes, planos e versionamento por escritório",
+      quickLabel: "+ Novo Serviço/Plano",
+      quickAction: "novo_servico"
     },
     calculadora: {
+      breadcrumb: "Calculadora de Honorários",
       title: "Calculadora de Honorários Contábeis",
-      sub: "Motor de cálculo conforme NBC PG 01 e Res. CFC 1.590/2020 integrado ao CRM e Propostas"
+      sub: "Motor de cálculo conforme NBC PG 01 e Res. CFC 1.590/2020 integrado ao CRM e Propostas",
+      quickLabel: "🚀 Gerar Proposta",
+      quickAction: "gerar_proposta"
     },
     propostas: {
+      breadcrumb: "Propostas Comerciais",
       title: "Propostas Comerciais",
-      sub: "Editor personalizado, identidade visual, envio por E-mail/WhatsApp, PDF, link seguro e aceite comercial"
+      sub: "Editor personalizado, identidade visual, envio por E-mail/WhatsApp, PDF, link seguro e aceite comercial",
+      quickLabel: "+ Nova Proposta",
+      quickAction: "nova_proposta"
     },
     crm: {
+      breadcrumb: "CRM de Vendas Contábil",
       title: "CRM de Vendas — Especializado em Contabilidade",
-      sub: "Pipeline Kanban, Diagnóstico Contábil, Atividades/Follow-ups e Indicadores Comerciais (MRR)"
+      sub: "Pipeline Kanban & Lista, Diagnóstico Contábil, Atividades/Follow-ups e Indicadores Comerciais (MRR)",
+      quickLabel: "+ Novo Lead",
+      quickAction: "novo_lead"
     },
     configuracoes: {
+      breadcrumb: "Configurações & Multi-Tenant",
       title: "Configurações do Escritório & Multi-Tenant",
-      sub: "Identidade visual, usuários e permissões (RBAC), modelos, integrações Supabase/Webhook e auditoria LGPD"
+      sub: "Identidade visual, usuários e permissões (RBAC), modelos, integrações Supabase/Webhook e auditoria LGPD",
+      quickLabel: "+ Novo Escritório",
+      quickAction: "novo_tenant"
     }
   };
   return map[STATE.activeNav] || map.calculadora;
+}
+
+function triggerHeaderQuickAction(actionKey) {
+  if (actionKey === "novo_servico") openNewPlanServiceModal();
+  else if (actionKey === "gerar_proposta") convertSimulationToProposal();
+  else if (actionKey === "nova_proposta") navigateTo("calculadora");
+  else if (actionKey === "novo_lead") openNewLeadModal();
+  else if (actionKey === "novo_tenant") openNewTenantModal();
+}
+
+function handleGlobalSearchInput(val) {
+  const box = document.getElementById("global-search-dropdown");
+  if (!box) return;
+  const q = (val || "").trim().toLowerCase();
+  if (!q) {
+    box.style.display = "none";
+    box.innerHTML = "";
+    return;
+  }
+
+  const results = [];
+  STATE.crm.opportunities.forEach((op) => {
+    if (
+      (op.company_name || "").toLowerCase().includes(q) ||
+      (op.contact_name || "").toLowerCase().includes(q) ||
+      (op.cpf_cnpj || "").toLowerCase().includes(q)
+    ) {
+      results.push({
+        badge: "CRM Lead",
+        title: `${op.company_name} (${op.contact_name})`,
+        sub: `${fmtBRL0(op.potential_monthly_value)}/mês · ${op.current_tax_regime || "simples"}`,
+        onclick: `closeGlobalSearch();navigateTo('crm','kanban');setTimeout(()=>openLeadDrawer('${op.id}'),60)`
+      });
+    }
+  });
+
+  STATE.proposals.forEach((p) => {
+    if (
+      (p.company_name || "").toLowerCase().includes(q) ||
+      (p.client_name || "").toLowerCase().includes(q) ||
+      (p.proposal_number || "").toLowerCase().includes(q)
+    ) {
+      results.push({
+        badge: `Proposta ${p.status}`,
+        title: `${p.proposal_number} — ${p.company_name}`,
+        sub: `${fmtBRL2(p.monthly_fee_final)}/mês · v${p.current_version}`,
+        onclick: `closeGlobalSearch();navigateTo('propostas')`
+      });
+    }
+  });
+
+  const modules = [
+    { key: "parametros", label: "Parâmetros (Custos, Margem, Markup, Regimes, Planos)" },
+    { key: "calculadora", label: "Calculadora de Honorários (NBC PG 01)" },
+    { key: "propostas", label: "Propostas Comerciais (PDF, Link, Aceite)" },
+    { key: "crm", label: "CRM de Vendas (Kanban, Lista, Diagnóstico, MRR)" },
+    { key: "configuracoes", label: "Configurações do Escritório & Usuários" }
+  ];
+  modules.forEach((m) => {
+    if (m.label.toLowerCase().includes(q)) {
+      results.push({
+        badge: "Módulo",
+        title: m.label,
+        sub: "Ir para módulo do sistema",
+        onclick: `closeGlobalSearch();navigateTo('${m.key}')`
+      });
+    }
+  });
+
+  if (results.length === 0) {
+    box.innerHTML = `<div style="padding:12px;font-size:12.5px;color:var(--muted)">Nenhum cliente, lead ou proposta encontrado para "${escapeHtml(val)}".</div>`;
+  } else {
+    box.innerHTML = results
+      .slice(0, 8)
+      .map(
+        (r) => `
+        <div onclick="${r.onclick}" style="padding:9px 12px;border-bottom:1px solid var(--line);cursor:pointer;display:flex;justify-content:space-between;align-items:center;gap:10px" onmouseover="this.style.background='var(--gold-bg)'" onmouseout="this.style.background='transparent'">
+          <div>
+            <strong style="font-size:13px;display:block;color:var(--cream)">${escapeHtml(r.title)}</strong>
+            <span style="font-size:11.5px;color:var(--muted)">${escapeHtml(r.sub)}</span>
+          </div>
+          <span class="tag tag-gold">${escapeHtml(r.badge)}</span>
+        </div>
+      `
+      )
+      .join("");
+  }
+  box.style.display = "block";
+}
+
+function closeGlobalSearch() {
+  const box = document.getElementById("global-search-dropdown");
+  const inp = document.getElementById("global-search-input");
+  if (box) box.style.display = "none";
+  if (inp) inp.value = "";
 }
 
 function getRootContainer() {
@@ -414,10 +553,17 @@ function renderApp(forceFullShell = false) {
 
   if (sameContext) {
     existingMain.innerHTML = mainContentHtml;
+    const bcEl = document.getElementById("topbar-breadcrumb-current");
     const titleEl = document.getElementById("topbar-page-title");
     const subEl = document.getElementById("topbar-page-sub");
+    const qaBtn = document.getElementById("topbar-quick-action-btn");
+    if (bcEl) bcEl.textContent = meta.breadcrumb;
     if (titleEl) titleEl.textContent = meta.title;
     if (subEl) subEl.textContent = meta.sub;
+    if (qaBtn) {
+      qaBtn.textContent = meta.quickLabel;
+      qaBtn.setAttribute("onclick", `triggerHeaderQuickAction('${meta.quickAction}')`);
+    }
 
     const bVer = document.getElementById("badge-param-ver");
     const bProps = document.getElementById("badge-props-count");
@@ -498,12 +644,36 @@ function renderApp(forceFullShell = false) {
         <header class="topbar">
           <div class="topbar-left">
             <div>
+              <div style="font-size:11.5px;color:var(--muted);margin-bottom:2px;display:flex;align-items:center;gap:6px">
+                <span>${escapeHtml(STATE.tenant.trade_name || STATE.tenant.name)}</span>
+                <span>›</span>
+                <strong id="topbar-breadcrumb-current" style="color:var(--gold)">${escapeHtml(meta.breadcrumb)}</strong>
+              </div>
               <h1 id="topbar-page-title" class="page-title">${escapeHtml(meta.title)}</h1>
               <p id="topbar-page-sub" class="page-subtitle">${escapeHtml(meta.sub)}</p>
             </div>
           </div>
 
+          <!-- BUSCA RÁPIDA GLOBAL (PLANO UX SEÇÃO 3) -->
+          <div class="topbar-search-wrap" style="position:relative">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="color:var(--muted);flex-shrink:0"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+            <input
+              id="global-search-input"
+              type="text"
+              placeholder="Buscar cliente, lead, proposta ou tela..."
+              oninput="handleGlobalSearchInput(this.value)"
+              onblur="setTimeout(closeGlobalSearch, 220)"
+            />
+            <div id="global-search-dropdown" style="display:none;position:absolute;top:calc(100% + 6px);left:0;right:0;background:var(--navy-2);border:1px solid var(--line);border-radius:10px;box-shadow:var(--shadow);z-index:250;max-height:320px;overflow-y:auto"></div>
+          </div>
+
           <div class="topbar-right">
+            <button id="topbar-quick-action-btn" class="btn-primary" style="padding:7px 12px;font-size:12px" onclick="triggerHeaderQuickAction('${meta.quickAction}')">
+              ${escapeHtml(meta.quickLabel)}
+            </button>
+            <button class="btn-secondary" style="padding:7px 11px;font-size:12px" onclick="toggleUiTheme()" title="Alternar entre Paleta Clean (Azul, Branco e Cinza) e Tema Escuro">
+              ${STATE.uiTheme === "dark" ? "☀️ Clean Azul/Branco" : "🌙 Escuro"}
+            </button>
             <span class="screen-badge" id="live-screen-badge" title="Adaptação automática ao tamanho de tela do dispositivo">
               ${escapeHtml(STATE.screenProfile.label)}
             </span>
@@ -553,21 +723,72 @@ function renderApp(forceFullShell = false) {
       </nav>
     </div>
     <div id="modal-container"></div>
+    <div id="drawer-container"></div>
   `;
 }
 
 /* =========================================================================
    1. MÓDULO DE PARÂMETROS (CENTRALIZAÇÃO E VERSIONAMENTO POR ESCRITÓRIO)
+      SEÇÃO 5.1 DO PLANO UX/UI: ABAS INTERNAS, EXPLICAÇÃO MARGEM VS MARKUP,
+      INDICADOR DE ALTERAÇÕES NÃO SALVAS E AÇÃO PREVISÍVEL DE SALVAR/CANCELAR
    ========================================================================= */
+function setParamSubTab(tabKey) {
+  STATE.paramSubTab = tabKey;
+  renderApp();
+}
+
+function markParamDirty() {
+  STATE.paramDirty = true;
+  const bar = document.getElementById("param-sticky-save-bar");
+  const badge = document.getElementById("param-dirty-badge");
+  if (bar) bar.style.borderColor = "var(--warn)";
+  if (badge) {
+    badge.textContent = "⚠️ Alterações não salvas nos parâmetros";
+    badge.className = "tag tag-warn";
+  }
+  updateParamMargemMarkupPreview();
+}
+
+function discardParameterChanges() {
+  STATE.paramDirty = false;
+  renderApp();
+  showToast("Alterações descartadas. Valores da versão ativa restaurados.");
+}
+
+function updateParamMargemMarkupPreview() {
+  const fc = parseFloat(document.getElementById("prm_fixed_cost")?.value) || 28000;
+  const ph = parseFloat(document.getElementById("prm_prod_hours")?.value) || 320;
+  const mg = parseFloat(document.getElementById("prm_margin")?.value) || 30;
+  const custoH = ph > 0 ? fc / ph : 0;
+  const precoMarkup = custoH * (1 + mg / 100);
+  const precoMargemReal = mg < 100 ? custoH / (1 - mg / 100) : precoMarkup;
+  const el = document.getElementById("param-margem-markup-live");
+  if (el) {
+    el.innerHTML = `
+      • <strong>Custo Hora Puro:</strong> ${fmtBRL2(custoH)}/h &nbsp;|&nbsp;
+      • <strong>Hora Técnica por Markup (+${mg}% sobre o custo — fórmula NBC PG 01 ativa):</strong> <strong class="gold">${fmtBRL2(precoMarkup)}/h</strong> &nbsp;|&nbsp;
+      • <strong>Referência por Margem Líquida (${mg}% sobre o preço de venda):</strong> ${fmtBRL2(precoMargemReal)}/h
+    `;
+  }
+}
+
 function renderParametrosView() {
   const pv = STATE.parameters?.activeVersion || {};
   const versions = STATE.parameters?.versions || [];
   const plansServices = STATE.parameters?.plansServices || [];
   const depts = pv.department_costs || [];
   const regimes = pv.regimes || {};
+  const tab = STATE.paramSubTab || "todos";
 
   const custoHora = pv.productive_hours_monthly > 0 ? pv.fixed_cost_monthly / pv.productive_hours_monthly : 0;
-  const horaTecnica = custoHora * (1 + (pv.target_margin_pct || 0) / 100);
+  const margPct = pv.target_margin_pct || 30;
+  const horaTecnica = custoHora * (1 + margPct / 100);
+  const horaMargemSobreVenda = margPct < 100 ? custoHora / (1 - margPct / 100) : horaTecnica;
+
+  const showOperacional = tab === "todos" || tab === "operacional" || tab === "margem";
+  const showDepts = tab === "todos" || tab === "departamentos";
+  const showPlanos = tab === "todos" || tab === "planos";
+  const showVersoes = tab === "todos" || tab === "versoes";
 
   return `
     <div class="kpi-grid">
@@ -584,20 +805,59 @@ function renderParametrosView() {
       <div class="kpi-card">
         <span>Custo Real / Hora Produtiva</span>
         <strong>${fmtBRL2(custoHora)}</strong>
-        <em>Piso ético operacional</em>
+        <em>Piso ético operacional (NBC PG 01)</em>
       </div>
       <div class="kpi-card">
-        <span>Hora Técnica com Margem (${pv.target_margin_pct || 30}%)</span>
+        <span>Hora Técnica Aplicada (${margPct}%)</span>
         <strong class="gold">${fmtBRL2(horaTecnica)}</strong>
         <em>Base para cálculo de honorários</em>
       </div>
     </div>
 
-    <div class="dois" style="align-items:start;margin-bottom:20px">
+    <!-- SUB-ABAS INTERNAS DE PARÂMETROS (SEÇÃO 3 & 5.1 DO PLANO UX/UI) -->
+    <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;margin-bottom:16px">
+      <div class="crm-tabs" style="margin-bottom:0;border-bottom:0">
+        <button class="crm-tab ${tab === "todos" ? "active" : ""}" onclick="setParamSubTab('todos')">📋 Visão Completa</button>
+        <button class="crm-tab ${tab === "operacional" ? "active" : ""}" onclick="setParamSubTab('operacional')">⚙️ 1. Custos & Hora Técnica</button>
+        <button class="crm-tab ${tab === "margem" ? "active" : ""}" onclick="setParamSubTab('margem')">📈 2. Margem vs. Markup & Alçadas</button>
+        <button class="crm-tab ${tab === "departamentos" ? "active" : ""}" onclick="setParamSubTab('departamentos')">🏢 3. Departamentos & Regimes</button>
+        <button class="crm-tab ${tab === "planos" ? "active" : ""}" onclick="setParamSubTab('planos')">📦 4. Planos & Serviços (${plansServices.length})</button>
+        <button class="crm-tab ${tab === "versoes" ? "active" : ""}" onclick="setParamSubTab('versoes')">🕒 5. Versões (v${pv.version_number || 1})</button>
+      </div>
+      <div>
+        <span id="param-dirty-badge" class="tag ${STATE.paramDirty ? "tag-warn" : "tag-ok"}">
+          ${STATE.paramDirty ? "⚠️ Alterações não salvas nos parâmetros" : "✓ Parâmetros sincronizados (v" + (pv.version_number || 1) + ")"}
+        </span>
+      </div>
+    </div>
+
+    <!-- EXPLICAÇÃO CONTEXTUAL MARGEM VS. MARKUP (EXIGÊNCIA EXPLÍCITA SEÇÃO 3 & 5.1) -->
+    <div class="card" style="margin-bottom:18px;border-left:4px solid var(--gold)">
+      <div class="card-body" style="padding:14px 18px;gap:6px">
+        <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
+          <strong style="font-size:13.5px;color:var(--gold)">💡 Ajuda Contextual: Entenda Margem vs. Markup na Precificação Contábil</strong>
+          <span class="tag tag-gold">Fórmula Original NBC PG 01 Preservada</span>
+        </div>
+        <p style="font-size:12.5px;color:var(--muted)">
+          • <strong>Markup sobre o Custo (padrão da calculadora):</strong> aplica o percentual diretamente sobre o custo da hora técnica (<code>Hora Técnica = Custo Hora × (1 + Percentual/100)</code>).<br/>
+          • <strong>Margem sobre a Receita:</strong> representa quanto sobra do preço final após descontar o custo (<code>Preço = Custo Hora ÷ (1 - Margem/100)</code>).
+        </p>
+        <div id="param-margem-markup-live" style="font-size:12.5px;background:var(--navy-3);padding:8px 12px;border-radius:8px;border:1px solid var(--line)">
+          • <strong>Custo Hora Puro:</strong> ${fmtBRL2(custoHora)}/h &nbsp;|&nbsp;
+          • <strong>Hora Técnica por Markup (+${margPct}% sobre o custo — fórmula NBC PG 01 ativa):</strong> <strong class="gold">${fmtBRL2(horaTecnica)}/h</strong> &nbsp;|&nbsp;
+          • <strong>Referência por Margem Líquida (${margPct}% sobre o preço de venda):</strong> ${fmtBRL2(horaMargemSobreVenda)}/h
+        </div>
+      </div>
+    </div>
+
+    <div class="${showOperacional && (showDepts || showVersoes) ? "dois" : ""}" style="align-items:start;margin-bottom:20px">
+      ${
+        showOperacional
+          ? `
       <div class="card">
         <div class="card-head">
           <div class="card-titles">
-            <span class="card-title">Regras Gerais de Custos, Hora Técnica, Margem e Alçadas</span>
+            <span class="card-title">Regras Gerais de Custos, Hora Técnica, Margem/Markup e Alçadas</span>
             <span class="card-sub">Ao salvar, uma nova versão imutável é criada para preservar o histórico das simulações anteriores</span>
           </div>
         </div>
@@ -605,71 +865,85 @@ function renderParametrosView() {
           <div class="dois">
             <div class="campo">
               <label class="campo-label">Custo Fixo Mensal (R$)</label>
-              <input type="number" id="prm_fixed_cost" value="${pv.fixed_cost_monthly || 28000}" />
+              <input type="number" id="prm_fixed_cost" value="${pv.fixed_cost_monthly || 28000}" oninput="markParamDirty()" />
             </div>
             <div class="campo">
               <label class="campo-label">Custos Variáveis / Impostos sobre Nota (%)</label>
-              <input type="number" step="0.5" id="prm_var_cost" value="${pv.variable_cost_pct || 0}" />
+              <input type="number" step="0.5" id="prm_var_cost" value="${pv.variable_cost_pct || 0}" oninput="markParamDirty()" />
             </div>
           </div>
 
           <div class="tres">
             <div class="campo">
               <label class="campo-label">Horas Produtivas / Mês</label>
-              <input type="number" id="prm_prod_hours" value="${pv.productive_hours_monthly || 320}" />
+              <input type="number" id="prm_prod_hours" value="${pv.productive_hours_monthly || 320}" oninput="markParamDirty()" />
             </div>
             <div class="campo">
-              <label class="campo-label">Margem de Lucro Alvo (%)</label>
-              <input type="number" id="prm_margin" value="${pv.target_margin_pct || 30}" />
+              <label class="campo-label">Margem / Markup Alvo (%)</label>
+              <input type="number" id="prm_margin" value="${pv.target_margin_pct || 30}" oninput="markParamDirty()" />
             </div>
             <div class="campo">
               <label class="campo-label">Preço Mínimo do Escritório (R$)</label>
-              <input type="number" id="prm_min_floor" value="${pv.minimum_fee_floor || 350}" />
+              <input type="number" id="prm_min_floor" value="${pv.minimum_fee_floor || 350}" oninput="markParamDirty()" />
             </div>
           </div>
 
           <div class="tres">
             <div class="campo">
               <label class="campo-label">Horas / Funcionário (DP)</label>
-              <input type="number" step="0.05" id="prm_h_emp" value="${pv.hours_per_employee || 0.45}" />
+              <input type="number" step="0.05" id="prm_h_emp" value="${pv.hours_per_employee || 0.45}" oninput="markParamDirty()" />
             </div>
             <div class="campo">
               <label class="campo-label">Horas / Sócio (Pró-labore)</label>
-              <input type="number" step="0.05" id="prm_h_part" value="${pv.hours_per_partner || 0.35}" />
+              <input type="number" step="0.05" id="prm_h_part" value="${pv.hours_per_partner || 0.35}" oninput="markParamDirty()" />
             </div>
             <div class="campo">
               <label class="campo-label">Horas / Filial ou IE</label>
-              <input type="number" step="0.1" id="prm_h_branch" value="${pv.hours_per_branch || 1.5}" />
+              <input type="number" step="0.1" id="prm_h_branch" value="${pv.hours_per_branch || 1.5}" oninput="markParamDirty()" />
             </div>
           </div>
 
           <div class="tres">
             <div class="campo">
               <label class="campo-label">Desc. Máx. Vendedor (%)</label>
-              <input type="number" id="prm_disc_seller" value="${pv.max_discount_seller_pct || 8}" />
+              <input type="number" id="prm_disc_seller" value="${pv.max_discount_seller_pct || 8}" oninput="markParamDirty()" />
             </div>
             <div class="campo">
               <label class="campo-label">Desc. Máx. Gestor (%)</label>
-              <input type="number" id="prm_disc_mgr" value="${pv.max_discount_manager_pct || 15}" />
+              <input type="number" id="prm_disc_mgr" value="${pv.max_discount_manager_pct || 15}" oninput="markParamDirty()" />
             </div>
             <div class="campo">
               <label class="campo-label">Taxa Implantação Padrão (R$)</label>
-              <input type="number" id="prm_setup_fee" value="${pv.default_setup_fee || 450}" />
+              <input type="number" id="prm_setup_fee" value="${pv.default_setup_fee || 450}" oninput="markParamDirty()" />
             </div>
           </div>
 
           <div class="campo">
             <label class="campo-label">Rótulo da Nova Versão de Parâmetros</label>
-            <input type="text" id="prm_version_label" placeholder="Ex.: Revisão de Custos e Hora Técnica 2026" />
+            <input type="text" id="prm_version_label" placeholder="Ex.: Revisão de Custos e Hora Técnica 2026" oninput="markParamDirty()" />
           </div>
 
-          <button class="btn-primary" onclick="saveNewParameterVersion()">
-            💾 Publicar Nova Versão de Parâmetros (Preservar Histórico)
-          </button>
+          <div style="display:flex;gap:10px;flex-wrap:wrap">
+            <button class="btn-primary" onclick="saveNewParameterVersion()">
+              💾 Publicar Nova Versão de Parâmetros (Preservar Histórico)
+            </button>
+            <button class="btn-secondary" onclick="discardParameterChanges()">
+              ↺ Cancelar / Restaurar Valores Ativos
+            </button>
+          </div>
         </div>
       </div>
+      `
+          : ""
+      }
 
+      ${
+        showDepts || showVersoes
+          ? `
       <div class="col-inputs">
+        ${
+          showDepts
+            ? `
         <div class="card">
           <div class="card-head">
             <div class="card-titles">
@@ -709,7 +983,7 @@ function renderParametrosView() {
                       ([k, r]) => `
                     <tr>
                       <td><strong>${escapeHtml(r.rotulo)}</strong></td>
-                      <td><input type="number" step="0.1" class="reg-hours-input" data-key="${k}" value="${r.horas}" style="width:80px;padding:5px" /> h</td>
+                      <td><input type="number" step="0.1" class="reg-hours-input" data-key="${k}" value="${r.horas}" style="width:80px;padding:5px" oninput="markParamDirty()" /> h</td>
                       <td>${fmtBRL0(r.refMin)}</td>
                       <td>${fmtBRL0(r.refMax)}</td>
                     </tr>
@@ -721,7 +995,13 @@ function renderParametrosView() {
             </div>
           </div>
         </div>
+        `
+            : ""
+        }
 
+        ${
+          showVersoes
+            ? `
         <div class="card">
           <div class="card-head">
             <div class="card-titles">
@@ -752,10 +1032,19 @@ function renderParametrosView() {
             </div>
           </div>
         </div>
+        `
+            : ""
+        }
       </div>
+      `
+          : ""
+      }
     </div>
 
-    <div class="card">
+    ${
+      showPlanos
+        ? `
+    <div class="card" style="margin-bottom:20px">
       <div class="card-head" style="justify-content:space-between;flex-wrap:wrap">
         <div class="card-titles">
           <span class="card-title">Planos, Pacotes e Serviços Personalizados do Escritório</span>
@@ -803,6 +1092,20 @@ function renderParametrosView() {
         </div>
       </div>
     </div>
+    `
+        : ""
+    }
+
+    <!-- BARRA PREVISÍVEL DE SALVAR E CANCELAR (SEÇÃO 5.1 DO PLANO UX/UI) -->
+    <div id="param-sticky-save-bar" class="sticky-action-bar">
+      <div style="font-size:12.5px;color:var(--muted)">
+        <strong>Controle de Versionamento:</strong> Salvar cria a versão <strong>v${(pv.version_number || 1) + 1}</strong> sem alterar propostas ou simulações antigas.
+      </div>
+      <div style="display:flex;gap:10px;flex-wrap:wrap">
+        <button class="btn-secondary" onclick="discardParameterChanges()">↺ Cancelar Alterações</button>
+        <button class="btn-primary" onclick="saveNewParameterVersion()">💾 Salvar Parâmetros (Publicar v${(pv.version_number || 1) + 1})</button>
+      </div>
+    </div>
   `;
 }
 
@@ -815,18 +1118,18 @@ async function saveNewParameterVersion() {
   });
 
   const payload = {
-    fixed_cost_monthly: parseFloat(document.getElementById("prm_fixed_cost").value) || 28000,
-    variable_cost_pct: parseFloat(document.getElementById("prm_var_cost").value) || 0,
-    productive_hours_monthly: parseFloat(document.getElementById("prm_prod_hours").value) || 320,
-    target_margin_pct: parseFloat(document.getElementById("prm_margin").value) || 30,
-    minimum_fee_floor: parseFloat(document.getElementById("prm_min_floor").value) || 350,
-    hours_per_employee: parseFloat(document.getElementById("prm_h_emp").value) || 0.45,
-    hours_per_partner: parseFloat(document.getElementById("prm_h_part").value) || 0.35,
-    hours_per_branch: parseFloat(document.getElementById("prm_h_branch").value) || 1.5,
-    max_discount_seller_pct: parseFloat(document.getElementById("prm_disc_seller").value) || 8,
-    max_discount_manager_pct: parseFloat(document.getElementById("prm_disc_mgr").value) || 15,
-    default_setup_fee: parseFloat(document.getElementById("prm_setup_fee").value) || 450,
-    version_label: document.getElementById("prm_version_label").value,
+    fixed_cost_monthly: parseFloat(document.getElementById("prm_fixed_cost")?.value) || pv.fixed_cost_monthly || 28000,
+    variable_cost_pct: parseFloat(document.getElementById("prm_var_cost")?.value) || pv.variable_cost_pct || 0,
+    productive_hours_monthly: parseFloat(document.getElementById("prm_prod_hours")?.value) || pv.productive_hours_monthly || 320,
+    target_margin_pct: parseFloat(document.getElementById("prm_margin")?.value) || pv.target_margin_pct || 30,
+    minimum_fee_floor: parseFloat(document.getElementById("prm_min_floor")?.value) || pv.minimum_fee_floor || 350,
+    hours_per_employee: parseFloat(document.getElementById("prm_h_emp")?.value) || pv.hours_per_employee || 0.45,
+    hours_per_partner: parseFloat(document.getElementById("prm_h_part")?.value) || pv.hours_per_partner || 0.35,
+    hours_per_branch: parseFloat(document.getElementById("prm_h_branch")?.value) || pv.hours_per_branch || 1.5,
+    max_discount_seller_pct: parseFloat(document.getElementById("prm_disc_seller")?.value) || pv.max_discount_seller_pct || 8,
+    max_discount_manager_pct: parseFloat(document.getElementById("prm_disc_mgr")?.value) || pv.max_discount_manager_pct || 15,
+    default_setup_fee: parseFloat(document.getElementById("prm_setup_fee")?.value) || pv.default_setup_fee || 450,
+    version_label: document.getElementById("prm_version_label")?.value || "",
     department_costs: pv.department_costs,
     regimes,
     activities: pv.activities,
@@ -841,6 +1144,7 @@ async function saveNewParameterVersion() {
       method: "POST",
       body: JSON.stringify(payload)
     });
+    STATE.paramDirty = false;
     await loadParameters();
     STATE.calc.custoFixo = payload.fixed_cost_monthly;
     STATE.calc.horasProdutivas = payload.productive_hours_monthly;
@@ -1075,6 +1379,17 @@ function renderCalcElementsGridHtml(c, X) {
   `;
 }
 
+function setCalcStep(stepKey, scrollTargetId = "") {
+  STATE.calcStep = stepKey;
+  renderApp();
+  if (scrollTargetId) {
+    setTimeout(() => {
+      const el = document.getElementById(scrollTargetId);
+      if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
+    }, 30);
+  }
+}
+
 function renderCalculadoraView() {
   const pv = STATE.parameters?.activeVersion || {};
   const regimes = pv.regimes || {
@@ -1110,8 +1425,33 @@ function renderCalculadoraView() {
 
   const c = STATE.calc;
   const X = getCalcSafeResult();
+  const cs = STATE.calcStep || "todos";
 
   return `
+    <!-- STEPPER PROGRESSIVO DA CALCULADORA (SEÇÃO 3 & 5.2 DO PLANO UX/UI) -->
+    <div class="flow-stepper" role="tablist" aria-label="Etapas da Simulação de Honorários">
+      <button type="button" class="flow-step ${cs === "todos" ? "active" : ""}" onclick="setCalcStep('todos')">
+        <span class="step-num">★</span>
+        <span>Visão Completa (Todos os Blocos)</span>
+      </button>
+      <button type="button" class="flow-step ${cs === "dados" ? "active" : c.companyName ? "done" : ""}" onclick="setCalcStep('dados', 'calc-sec-cliente')">
+        <span class="step-num">1</span>
+        <span>Dados do Cliente & Perfil</span>
+      </button>
+      <button type="button" class="flow-step ${cs === "servicos" ? "active" : ""}" onclick="setCalcStep('servicos', 'calc-sec-servicos')">
+        <span class="step-num">2</span>
+        <span>Serviços, Planos & Avulsos</span>
+      </button>
+      <button type="button" class="flow-step ${cs === "custos" ? "active" : ""}" onclick="setCalcStep('custos', 'calc-sec-custos')">
+        <span class="step-num">3</span>
+        <span>Custos & Ajustes do Escritório</span>
+      </button>
+      <button type="button" class="flow-step ${cs === "resultado" ? "active" : ""}" onclick="setCalcStep('resultado', 'calc-summary-top-zone')">
+        <span class="step-num">4</span>
+        <span>Resultado & Proposta (${fmtBRL0(X.honorarioFinal)})</span>
+      </button>
+    </div>
+
     <div class="card calc-toolbar-card" style="margin-bottom:18px">
       <div class="card-body" style="padding:14px 18px">
         <div class="tres" style="align-items:end">
@@ -1156,7 +1496,7 @@ function renderCalculadoraView() {
 
     <div class="grid-calc">
       <div class="col-inputs">
-        <section class="card">
+        <section id="calc-sec-custos" class="card" style="${cs !== "todos" && cs !== "custos" ? "display:none" : ""}">
           <div class="card-head">
             <span class="card-icon">⚙️</span>
             <div class="card-titles">
@@ -1213,7 +1553,7 @@ function renderCalculadoraView() {
           </div>
         </section>
 
-        <section class="card">
+        <section id="calc-sec-cliente" class="card" style="${cs !== "todos" && cs !== "dados" ? "display:none" : ""}">
           <div class="card-head">
             <span class="card-icon">🏢</span>
             <div class="card-titles">
@@ -1366,7 +1706,7 @@ function renderCalculadoraView() {
           </div>
         </section>
 
-        <section class="card">
+        <section id="calc-sec-servicos" class="card" style="${cs !== "todos" && cs !== "servicos" ? "display:none" : ""}">
           <div class="card-head">
             <span class="card-icon">📦</span>
             <div class="card-titles">
@@ -1417,7 +1757,7 @@ function renderCalculadoraView() {
           </div>
         </section>
 
-        <section class="card">
+        <section class="card" style="${cs !== "todos" && cs !== "servicos" ? "display:none" : ""}">
           <div class="card-head">
             <span class="card-icon">✨</span>
             <div class="card-titles">
@@ -1947,14 +2287,115 @@ async function submitNewProposal(simulationId) {
    ========================================================================= */
 function getPublicProposalLink(publicToken) {
   if (STATE.runtimeMode === "server_api") {
-    return `/p/${encodeURIComponent(publicToken)}`;
+    const origin = window.location.origin && window.location.origin !== "null" ? window.location.origin : "";
+    return `${origin}/p/${encodeURIComponent(publicToken)}`;
   }
   const baseUrl = window.location.href.split("?")[0].split("#")[0];
   return `${baseUrl}?proposta=${encodeURIComponent(publicToken)}`;
 }
 
+function updatePropostasFilter(key, val) {
+  STATE.propostasFilter[key] = val;
+  renderApp();
+}
+
+function togglePropostasCol(colKey) {
+  STATE.propostasFilter.cols[colKey] = !STATE.propostasFilter.cols[colKey];
+  renderApp();
+}
+
+function clearPropostasFilters() {
+  STATE.propostasFilter.q = "";
+  STATE.propostasFilter.status = "";
+  STATE.propostasFilter.cols = { doc: true, contato: true, mensal: true, implantacao: true, validade: true, versao: true };
+  renderApp();
+  showToast("Filtros e colunas de propostas restaurados.");
+}
+
+function openProposalPreviewModal(propId) {
+  const p = STATE.proposals.find((x) => x.id === propId);
+  if (!p) return;
+  const servicesRows = (p.services_summary || [])
+    .map(
+      (s) => `
+      <tr>
+        <td>${escapeHtml(s.nome)}</td>
+        <td style="text-align:center">${Number(s.horas || 0).toFixed(1)} h/mês</td>
+        <td style="text-align:right;font-weight:700">${fmtBRL2(s.valor)}</td>
+      </tr>
+    `
+    )
+    .join("");
+
+  const modal = document.getElementById("modal-container");
+  modal.innerHTML = `
+    <div class="modal-backdrop" onclick="if(event.target===this)this.remove()">
+      <div class="modal-box" style="max-width:820px">
+        <div class="modal-head">
+          <h3>👁️ Pré-visualização da Proposta — ${escapeHtml(p.proposal_number)} (v${p.current_version})</h3>
+          <div style="display:flex;gap:8px;align-items:center">
+            <a class="btn-secondary" href="${getPublicProposalLink(p.public_token)}" target="_blank">🖨️ Abrir Página p/ Impressão PDF</a>
+            <button class="btn-xs" onclick="document.getElementById('modal-container').innerHTML=''">✕</button>
+          </div>
+        </div>
+        <div class="card" style="background:var(--navy-3)">
+          <div class="card-body" style="padding:22px;gap:14px">
+            <div style="border-bottom:1px solid var(--line);padding-bottom:12px;display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:10px">
+              <div>
+                <span class="tag tag-gold">Status: ${escapeHtml(p.status)} · Versão v${p.current_version}</span>
+                <h2 style="font-size:20px;margin-top:6px">${escapeHtml(p.cover_title)}</h2>
+                <p style="font-size:12.5px;color:var(--muted)">Cliente: <strong>${escapeHtml(p.company_name)}</strong> (${escapeHtml(p.client_name)}) · CNPJ/CPF: ${escapeHtml(p.cpf_cnpj || "Em abertura")}</p>
+              </div>
+              <div style="text-align:right">
+                <span style="font-size:11px;color:var(--muted);display:block">Investimento Mensal</span>
+                <strong class="gold" style="font-size:22px">${fmtBRL2(p.monthly_fee_final)}/mês</strong>
+                <span style="font-size:11px;color:var(--muted);display:block">Implantação: ${fmtBRL2(p.setup_fee)}</span>
+              </div>
+            </div>
+            <div>
+              <h4 style="color:var(--gold);font-size:13.5px;margin-bottom:4px">1. Apresentação & Diferenciais do Escritório</h4>
+              <p style="font-size:12.5px;color:var(--cream);white-space:pre-line">${escapeHtml(p.office_presentation)}</p>
+              <p style="font-size:12px;color:var(--muted);white-space:pre-line;margin-top:6px">${escapeHtml(p.differentials_text)}</p>
+            </div>
+            <div>
+              <h4 style="color:var(--gold);font-size:13.5px;margin-bottom:6px">2. Escopo Técnico Discriminado (Res. CFC 1.590/2020)</h4>
+              <p style="font-size:12.5px;margin-bottom:8px">${escapeHtml(p.technical_scope_text)}</p>
+              <div class="table-responsive">
+                <table class="data-table">
+                  <thead><tr><th>Departamento / Serviço</th><th style="text-align:center">Horas/Mês</th><th style="text-align:right">Valor</th></tr></thead>
+                  <tbody>${servicesRows}</tbody>
+                </table>
+              </div>
+            </div>
+            <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;border-top:1px solid var(--line);padding-top:10px;font-size:12.5px">
+              <span><strong>Condições:</strong> ${escapeHtml(p.payment_conditions)} · <strong>Validade:</strong> ${escapeHtml(p.valid_until)}</span>
+              <div style="display:flex;gap:8px">
+                <button class="btn-secondary" onclick="document.getElementById('modal-container').innerHTML='';openEditProposalModal('${p.id}')">✏️ Editar Proposta</button>
+                <button class="btn-primary" onclick="document.getElementById('modal-container').innerHTML=''">Fechar Pré-visualização</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
 function renderPropostasView() {
-  const props = STATE.proposals;
+  const allProps = STATE.proposals || [];
+  const f = STATE.propostasFilter;
+  const cols = f.cols;
+  const q = (f.q || "").trim().toLowerCase();
+
+  const props = allProps.filter((p) => {
+    if (f.status && p.status !== f.status) return false;
+    if (q) {
+      const hay = `${p.proposal_number} ${p.company_name} ${p.client_name} ${p.cpf_cnpj || ""} ${p.contact_email || ""}`.toLowerCase();
+      if (!hay.includes(q)) return false;
+    }
+    return true;
+  });
+
   const statusBadgeColor = (st) => {
     if (st === "Aceita") return "tag-ok";
     if (st === "Recusada" || st === "Cancelada" || st === "Expirada") return "tag-warn";
@@ -1962,23 +2403,150 @@ function renderPropostasView() {
     return "";
   };
 
+  const vm = STATE.propostasViewMode || "ambos";
+
   return `
-    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;flex-wrap:wrap;gap:10px">
-      <div>
-        <span style="font-size:13px;color:var(--muted)">
-          Total de propostas emitidas pelo escritório: <strong>${props.length}</strong> · Preservação automática de versões e histórico de envios/visualizações.
-        </span>
+    <!-- BARRA DE FILTROS, BUSCA, COLUNAS CONFIGURÁVEIS E BOTÃO LIMPAR FILTROS (SEÇÃO 5.3 DO PLANO UX/UI) -->
+    <div class="filter-bar">
+      <div class="campo" style="min-width:220px;flex:1">
+        <label class="campo-label">🔍 Buscar Proposta</label>
+        <input
+          type="text"
+          value="${escapeHtml(f.q)}"
+          placeholder="Empresa, contato, CNPJ ou nº da proposta..."
+          oninput="updatePropostasFilter('q', this.value)"
+        />
       </div>
-      <button class="btn-primary" onclick="navigateTo('calculadora')">+ Nova Proposta via Calculadora</button>
+
+      <div class="campo" style="min-width:170px">
+        <label class="campo-label">Status Comercial</label>
+        <select onchange="updatePropostasFilter('status', this.value)">
+          <option value="">Todos os status (${allProps.length})</option>
+          ${["Rascunho", "Enviada", "Visualizada", "Em negociação", "Aceita", "Recusada", "Expirada", "Cancelada"]
+            .map((st) => `<option value="${st}" ${f.status === st ? "selected" : ""}>${st}</option>`)
+            .join("")}
+        </select>
+      </div>
+
+      <div class="campo" style="min-width:165px">
+        <label class="campo-label">Modo de Exibição</label>
+        <select onchange="STATE.propostasViewMode=this.value;renderApp()">
+          <option value="ambos" ${vm === "ambos" ? "selected" : ""}>📋 Tabela + Cards</option>
+          <option value="tabela" ${vm === "tabela" ? "selected" : ""}>📋 Apenas Tabela</option>
+          <option value="cards" ${vm === "cards" ? "selected" : ""}>🗂️ Apenas Cards</option>
+        </select>
+      </div>
+
+      <div class="filter-actions">
+        <button type="button" class="btn-secondary" onclick="clearPropostasFilters()" title="Restaurar busca, status e colunas">
+          ↺ Limpar filtros
+        </button>
+        <button type="button" class="btn-primary" onclick="navigateTo('calculadora')">
+          + Nova proposta
+        </button>
+      </div>
     </div>
 
+    <!-- CONFIGURAÇÃO RÁPIDA DE COLUNAS DA TABELA (SEÇÃO 5.3) -->
+    <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;margin-bottom:14px;font-size:12px;color:var(--muted)">
+      <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+        <strong>Colunas da tabela:</strong>
+        <label style="display:inline-flex;align-items:center;gap:4px;cursor:pointer"><input type="checkbox" style="width:auto" ${cols.contato ? "checked" : ""} onchange="togglePropostasCol('contato')" /> Contato/CNPJ</label>
+        <label style="display:inline-flex;align-items:center;gap:4px;cursor:pointer"><input type="checkbox" style="width:auto" ${cols.mensal ? "checked" : ""} onchange="togglePropostasCol('mensal')" /> Honorário Mensal</label>
+        <label style="display:inline-flex;align-items:center;gap:4px;cursor:pointer"><input type="checkbox" style="width:auto" ${cols.implantacao ? "checked" : ""} onchange="togglePropostasCol('implantacao')" /> Implantação</label>
+        <label style="display:inline-flex;align-items:center;gap:4px;cursor:pointer"><input type="checkbox" style="width:auto" ${cols.validade ? "checked" : ""} onchange="togglePropostasCol('validade')" /> Validade</label>
+        <label style="display:inline-flex;align-items:center;gap:4px;cursor:pointer"><input type="checkbox" style="width:auto" ${cols.versao ? "checked" : ""} onchange="togglePropostasCol('versao')" /> Versão</label>
+      </div>
+      <span>Exibindo <strong>${props.length}</strong> de <strong>${allProps.length}</strong> proposta(s)</span>
+    </div>
+
+    ${
+      props.length === 0
+        ? `
+      <div class="empty-state-box" style="margin-bottom:18px">
+        <strong style="font-size:15px;color:var(--cream);display:block;margin-bottom:6px">Nenhuma proposta encontrada com os filtros atuais</strong>
+        <p style="font-size:12.5px;margin-bottom:12px">Limpe os filtros ativos ou gere uma nova proposta comercial a partir da Calculadora.</p>
+        <div style="display:flex;justify-content:center;gap:10px">
+          <button class="btn-secondary" onclick="clearPropostasFilters()">↺ Limpar filtros</button>
+          <button class="btn-primary" onclick="navigateTo('calculadora')">+ Nova proposta</button>
+        </div>
+      </div>
+    `
+        : ""
+    }
+
+    ${
+      props.length > 0 && (vm === "ambos" || vm === "tabela")
+        ? `
+      <div class="card" style="margin-bottom:18px">
+        <div class="card-head">
+          <div class="card-titles">
+            <span class="card-title">Tabela Gerencial de Propostas Comerciais</span>
+            <span class="card-sub">Visão tabular rápida com filtros, colunas configuráveis e pré-visualização imediata</span>
+          </div>
+        </div>
+        <div class="card-body">
+          <div class="table-responsive">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>Nº / Empresa</th>
+                  <th>Status</th>
+                  ${cols.contato ? `<th>Contato / Documento</th>` : ""}
+                  ${cols.mensal ? `<th>Honorário Mensal</th>` : ""}
+                  ${cols.implantacao ? `<th>Implantação</th>` : ""}
+                  ${cols.validade ? `<th>Validade</th>` : ""}
+                  ${cols.versao ? `<th>Versão</th>` : ""}
+                  <th>Ações Rápidas</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${props
+                  .map(
+                    (p) => `
+                  <tr>
+                    <td>
+                      <strong>${escapeHtml(p.proposal_number)}</strong>
+                      <div style="font-size:12px;color:var(--cream)">${escapeHtml(p.company_name)}</div>
+                    </td>
+                    <td><span class="tag ${statusBadgeColor(p.status)}">${escapeHtml(p.status)}</span></td>
+                    ${
+                      cols.contato
+                        ? `<td>${escapeHtml(p.client_name)}<div style="font-size:11px;color:var(--muted)">${escapeHtml(p.cpf_cnpj || "Em abertura")}</div></td>`
+                        : ""
+                    }
+                    ${cols.mensal ? `<td><strong class="gold">${fmtBRL2(p.monthly_fee_final)}/mês</strong></td>` : ""}
+                    ${cols.implantacao ? `<td>${fmtBRL2(p.setup_fee)}</td>` : ""}
+                    ${cols.validade ? `<td>${escapeHtml(p.valid_until || "-")}</td>` : ""}
+                    ${cols.versao ? `<td><span class="tag">v${p.current_version}</span></td>` : ""}
+                    <td>
+                      <div style="display:flex;gap:5px;flex-wrap:wrap">
+                        <button class="btn-xs" onclick="openProposalPreviewModal('${p.id}')" title="Pré-visualizar Proposta">👁️ Preview</button>
+                        <button class="btn-xs" onclick="openEditProposalModal('${p.id}')" title="Editar / Nova Versão">✏️ Editar</button>
+                        <button class="btn-xs" onclick="sendProposalChannel('${p.id}', 'whatsapp')" title="Enviar por WhatsApp">💬 Whats</button>
+                        <a class="btn-xs" href="${getPublicProposalLink(p.public_token)}" target="_blank" title="Abrir Link Público / PDF">🔗 PDF</a>
+                      </div>
+                    </td>
+                  </tr>
+                `
+                  )
+                  .join("")}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    `
+        : ""
+    }
+
+    ${
+      props.length > 0 && (vm === "ambos" || vm === "cards")
+        ? `
     <div class="col-inputs">
-      ${
-        props.length === 0
-          ? `<div class="card"><div class="card-body">Nenhuma proposta gerada ainda. Clique em "GERAR PROPOSTA" na Calculadora.</div></div>`
-          : props
-              .map(
-                (p) => `
+      ${props
+        .map(
+          (p) => `
           <div class="card">
             <div class="card-body">
               <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:14px;flex-wrap:wrap">
@@ -2015,6 +2583,7 @@ function renderPropostasView() {
               }
 
               <div style="display:flex;gap:8px;flex-wrap:wrap;padding-top:10px;border-top:1px solid var(--line);align-items:center">
+                <button class="btn-secondary" onclick="openProposalPreviewModal('${p.id}')">👁️ Pré-visualizar</button>
                 <button class="btn-secondary" onclick="openEditProposalModal('${p.id}')">✏️ Editar / Nova Versão</button>
                 <button class="btn-secondary" onclick="sendProposalChannel('${p.id}', 'email')">📧 Enviar por E-mail</button>
                 <button class="btn-secondary" onclick="sendProposalChannel('${p.id}', 'whatsapp')">💬 Enviar por WhatsApp</button>
@@ -2049,10 +2618,12 @@ function renderPropostasView() {
             </div>
           </div>
         `
-              )
-              .join("")
-      }
+        )
+        .join("")}
     </div>
+    `
+        : ""
+    }
   `;
 }
 
@@ -2383,7 +2954,184 @@ async function confirmPublicProposalBrowser(propId) {
 
 /* =========================================================================
    4. MÓDULO CRM DE VENDAS ESPECIALIZADO EM CONTABILIDADE
+      SEÇÃO 5.4 DO PLANO UX/UI: KANBAN + VISÃO EM LISTA, FILTROS COM LIMPAR,
+      TEMPO PARADO, VENDEDOR RESPONSÁVEL E PAINEL LATERAL DIREITO (DRAWER)
    ========================================================================= */
+function updateCrmFilter(key, val) {
+  STATE.crmFilter[key] = val;
+  renderApp();
+}
+
+function clearCrmFilters() {
+  STATE.crmFilter = { q: "", stage: "", seller: "", regime: "" };
+  renderApp();
+  showToast("Filtros do CRM limpos.");
+}
+
+function getLeadIdleDays(op) {
+  const refStr = op.updated_at || op.created_at;
+  if (!refStr) return 0;
+  const dt = new Date(refStr.replace(" ", "T"));
+  if (isNaN(dt.getTime())) return 0;
+  return Math.max(0, Math.floor((Date.now() - dt.getTime()) / 86400000));
+}
+
+function getSellerNameForOpp(op) {
+  if (op.assigned_seller_name) return op.assigned_seller_name;
+  const s = (STATE.crm.sellers || []).find((x) => x.id === op.assigned_seller_id);
+  return s ? s.name : STATE.currentUser?.name || "Consultor Comercial";
+}
+
+function getFilteredCrmOpportunities() {
+  const cf = STATE.crmFilter;
+  const q = (cf.q || "").trim().toLowerCase();
+  return (STATE.crm.opportunities || []).filter((op) => {
+    if (cf.stage && op.stage_id !== cf.stage) return false;
+    if (cf.seller && op.assigned_seller_id !== cf.seller) return false;
+    if (cf.regime && (op.current_tax_regime || "simples") !== cf.regime) return false;
+    if (q) {
+      const hay = `${op.company_name} ${op.contact_name} ${op.cpf_cnpj || ""} ${op.email || ""} ${op.whatsapp || ""} ${op.lead_origin || ""}`.toLowerCase();
+      if (!hay.includes(q)) return false;
+    }
+    return true;
+  });
+}
+
+async function openLeadDrawer(oppId) {
+  const op = STATE.crm.opportunities.find((o) => o.id === oppId);
+  if (!op) return;
+  STATE.drawerOppId = oppId;
+  const drawerRoot = document.getElementById("drawer-container");
+  if (!drawerRoot) return;
+
+  const stg = STATE.crm.stages.find((s) => s.id === op.stage_id) || {};
+  const idleDays = getLeadIdleDays(op);
+  const sellerName = getSellerNameForOpp(op);
+  const oppActs = STATE.crm.activities.filter((a) => a.opportunity_id === oppId);
+
+  drawerRoot.innerHTML = `
+    <div class="drawer-backdrop" onclick="if(event.target===this)closeLeadDrawer()">
+      <aside class="drawer-panel" role="dialog" aria-label="Detalhes do Lead">
+        <div class="drawer-head">
+          <div>
+            <span class="tag tag-gold" style="margin-bottom:4px">${escapeHtml(stg.name || "Etapa")} · ⏱️ ${idleDays}d parado</span>
+            <h3 style="font-size:17px">${escapeHtml(op.company_name)}</h3>
+            <span style="font-size:12px;color:var(--muted)">Contato: <strong>${escapeHtml(op.contact_name)}</strong> · ${escapeHtml(op.cpf_cnpj || "CNPJ em abertura")}</span>
+          </div>
+          <button class="btn-xs" onclick="closeLeadDrawer()">✕</button>
+        </div>
+
+        <div class="drawer-body">
+          <div class="tres">
+            <div class="kpi-card">
+              <span>Honorário Potencial</span>
+              <strong class="gold" style="font-size:16px">${fmtBRL2(op.potential_monthly_value)}/mês</strong>
+            </div>
+            <div class="kpi-card">
+              <span>Faturamento Est.</span>
+              <strong style="font-size:15px">${fmtBRL0(op.estimated_revenue)}</strong>
+            </div>
+            <div class="kpi-card">
+              <span>Regime / Porte</span>
+              <strong style="font-size:13px">${escapeHtml((op.current_tax_regime || "simples").toUpperCase())} (${op.employees_count || 0} func.)</strong>
+            </div>
+          </div>
+
+          <div class="card" style="background:var(--navy-3)">
+            <div class="card-body" style="padding:12px 14px;gap:8px;font-size:12.5px">
+              <div><strong>👔 Vendedor Responsável:</strong> ${escapeHtml(sellerName)}</div>
+              <div><strong>📍 Cidade/UF:</strong> ${escapeHtml(op.city || "-")} / ${escapeHtml(op.state || "-")} · <strong>Origem:</strong> ${escapeHtml(op.lead_origin || "-")}</div>
+              <div><strong>📧 E-mail:</strong> ${escapeHtml(op.email || "-")} · <strong>📱 WhatsApp:</strong> ${escapeHtml(op.whatsapp || "-")}</div>
+              <div><strong>🔄 Tipo de Contratação:</strong> ${escapeHtml(op.hiring_type || "Troca de contador")} · <strong>Contador Atual:</strong> ${escapeHtml(op.current_accountant || "Não informado")}</div>
+            </div>
+          </div>
+
+          <div class="campo">
+            <label class="campo-label">Mover Etapa do Pipeline (Acessível s/ Drag-and-Drop)</label>
+            <select onchange="moveOppViaSelect('${op.id}', this.value);setTimeout(()=>openLeadDrawer('${op.id}'),120)">
+              ${STATE.crm.stages
+                .map((sOpt) => `<option value="${sOpt.id}" ${sOpt.id === op.stage_id ? "selected" : ""}>${escapeHtml(sOpt.name)}</option>`)
+                .join("")}
+            </select>
+          </div>
+
+          <div class="card">
+            <div class="card-head" style="padding:10px 14px">
+              <div class="card-titles">
+                <span class="card-title" style="font-size:13px">📌 Registrar Próxima Ação / Follow-up Rápido</span>
+              </div>
+            </div>
+            <div class="card-body" style="padding:12px 14px">
+              <div class="dois">
+                <div class="campo">
+                  <label class="campo-label">Próxima Ação</label>
+                  <input type="text" id="drw_act_title" value="${escapeHtml(op.next_action || "Apresentar diagnóstico e proposta")}" />
+                </div>
+                <div class="campo">
+                  <label class="campo-label">Data Limite</label>
+                  <input type="date" id="drw_act_due" value="${new Date().toISOString().slice(0, 10)}" />
+                </div>
+              </div>
+              <button class="btn-secondary" onclick="submitDrawerQuickActivity('${op.id}')">+ Salvar Próxima Ação no Lead</button>
+            </div>
+          </div>
+
+          <div>
+            <h4 style="font-size:13px;color:var(--gold);margin-bottom:6px">Atividades Vinculadas (${oppActs.length})</h4>
+            ${
+              oppActs.length === 0
+                ? `<p style="font-size:12px;color:var(--muted)">Nenhuma tarefa cadastrada ainda para este lead.</p>`
+                : oppActs
+                    .map(
+                      (a) => `
+                  <div style="font-size:12px;padding:7px 10px;border:1px solid var(--line);border-radius:8px;margin-bottom:6px;display:flex;justify-content:space-between">
+                    <span>${a.completed ? "✅" : "⬜"} <strong>${escapeHtml(a.title)}</strong> (${escapeHtml(a.activity_type)})</span>
+                    <span class="tag">${escapeHtml(a.due_date || "-")}</span>
+                  </div>
+                `
+                    )
+                    .join("")
+            }
+          </div>
+        </div>
+
+        <div class="drawer-foot">
+          <button class="btn-danger" onclick="closeLeadDrawer();deleteOpportunityLead('${op.id}')">🗑️ Excluir Lead</button>
+          <div style="display:flex;gap:8px;flex-wrap:wrap">
+            <button class="btn-secondary" onclick="closeLeadDrawer();openDiagnosticForOpp('${op.id}')">🩺 Diagnóstico</button>
+            <button class="btn-primary" onclick="closeLeadDrawer();sendOppToCalculator('${op.id}')">🧮 Precificar na Calculadora</button>
+          </div>
+        </div>
+      </aside>
+    </div>
+  `;
+}
+
+function closeLeadDrawer() {
+  STATE.drawerOppId = "";
+  const drawerRoot = document.getElementById("drawer-container");
+  if (drawerRoot) drawerRoot.innerHTML = "";
+}
+
+async function submitDrawerQuickActivity(oppId) {
+  const title = document.getElementById("drw_act_title")?.value || "Follow-up comercial";
+  const due = document.getElementById("drw_act_due")?.value || new Date().toISOString().slice(0, 10);
+  await apiFetch("/api/crm/activities", {
+    method: "POST",
+    body: JSON.stringify({
+      opportunity_id: oppId,
+      activity_type: "tarefa",
+      due_date: due,
+      title,
+      description: "Registrado via Painel Lateral (Drawer) do CRM"
+    })
+  });
+  await loadCRMPipeline();
+  showToast("Próxima ação registrada com sucesso!");
+  renderApp();
+  openLeadDrawer(oppId);
+}
+
 function renderCRMView() {
   const pendingActs = STATE.crm.activities.filter((a) => !a.completed).length;
 
@@ -2397,7 +3145,7 @@ function renderCRMView() {
     <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px">
       <div class="crm-tabs" style="margin-bottom:0;border-bottom:0">
         <button class="crm-tab ${STATE.crmSubTab === "kanban" ? "active" : ""}" onclick="navigateTo('crm', 'kanban')">
-          📊 7.1 Pipeline Kanban (${STATE.crm.opportunities.length})
+          📊 7.1 Pipeline (${STATE.crm.opportunities.length})
         </button>
         <button class="crm-tab ${STATE.crmSubTab === "diagnostico" ? "active" : ""}" onclick="navigateTo('crm', 'diagnostico')">
           🩺 7.3 Diagnóstico Comercial Contábil
@@ -2425,79 +3173,223 @@ function renderCRMView() {
 }
 
 function renderCRMKanbanTab() {
+  const cf = STATE.crmFilter;
+  const vm = STATE.crmViewMode || "kanban";
+  const filteredOpps = getFilteredCrmOpportunities();
+
   return `
-    <p style="font-size:12.5px;color:var(--muted);margin-bottom:12px">
-      💡 Arraste e solte (Drag-and-Drop) no desktop, use o seletor rápido de etapa ou clique em <strong>🗑️ Excluir</strong> para retirar qualquer lead.
-    </p>
-    <div class="kanban-board">
-      ${STATE.crm.stages
-        .map((st) => {
-          const colOpps = STATE.crm.opportunities.filter((o) => o.stage_id === st.id);
-          const colTotal = colOpps.reduce((acc, o) => acc + Number(o.potential_monthly_value || 0), 0);
-          return `
-          <div class="kanban-col"
-               ondragover="event.preventDefault();this.classList.add('drag-over')"
-               ondragleave="this.classList.remove('drag-over')"
-               ondrop="handleKanbanDrop(event, '${st.id}', ${st.is_lost ? "true" : "false"})">
-            <div class="kanban-col-head">
-              <div class="kanban-col-title">
-                <span class="stage-dot" style="background:${escapeHtml(st.color)}"></span>
-                <span>${escapeHtml(st.name)}</span>
-              </div>
-              <span class="tag">${colOpps.length} · ${fmtBRL0(colTotal)}</span>
-            </div>
-            <div class="kanban-col-body">
-              ${colOpps
-                .map(
-                  (op) => `
-                <div class="kanban-card" draggable="true" ondragstart="event.dataTransfer.setData('text/plain', '${op.id}')">
-                  <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:6px">
-                    <span class="kanban-card-company">${escapeHtml(op.company_name)}</span>
-                    <div style="display:flex;align-items:center;gap:4px">
-                      <span class="tag tag-gold">${fmtBRL0(op.potential_monthly_value)}/mês</span>
-                      <button type="button" class="btn-xs btn-danger-xs" onclick="deleteOpportunityLead('${op.id}')" title="Retirar / Excluir este Lead">🗑️</button>
-                    </div>
-                  </div>
-                  <div class="kanban-card-contact">
-                    👤 ${escapeHtml(op.contact_name)} · ${escapeHtml(op.hiring_type || "Troca de contador")}
-                  </div>
-                  <div class="kanban-tags">
-                    <span class="tag">${escapeHtml((op.current_tax_regime || "simples").toUpperCase())}</span>
-                    <span class="tag">${op.employees_count || 0} func.</span>
-                    <span class="tag">Fat.: ${fmtBRL0(op.estimated_revenue)}</span>
-                    ${op.has_diagnostic ? '<span class="tag tag-ok">✓ Diagnóstico</span>' : ""}
-                    ${op.latest_proposal_status ? `<span class="tag tag-gold">Prop.: ${escapeHtml(op.latest_proposal_status)}</span>` : ""}
-                    ${op.loss_reason_name ? `<span class="tag tag-warn">Perda: ${escapeHtml(op.loss_reason_name)}</span>` : ""}
-                  </div>
-                  ${
-                    op.next_action
-                      ? `<div style="font-size:11px;color:#D4DCEA;background:rgba(255,255,255,0.03);padding:5px 7px;border-radius:6px">
-                          📌 <strong>Próx. ação:</strong> ${escapeHtml(op.next_action)} (${escapeHtml(op.next_action_date || "-")})
-                        </div>`
-                      : ""
-                  }
-                  <div class="kanban-card-actions">
-                    <button class="btn-xs" onclick="openDiagnosticForOpp('${op.id}')">🩺 Diagnóstico</button>
-                    <button class="btn-xs" onclick="sendOppToCalculator('${op.id}')">🧮 Precificar</button>
-                    <button class="btn-xs" onclick="openActivityModalForOpp('${op.id}')">+ Tarefa</button>
-                    <button class="btn-xs" onclick="openStageHistoryModal('${op.id}')" title="Histórico de Etapas">🕒</button>
-                    <button class="btn-xs btn-danger-xs" onclick="deleteOpportunityLead('${op.id}')" title="Retirar / Excluir este Lead">🗑️ Excluir</button>
-                  </div>
-                  <select style="font-size:11px;padding:4px 6px;margin-top:2px" onchange="moveOppViaSelect('${op.id}', this.value)">
-                    ${STATE.crm.stages
-                      .map((sOpt) => `<option value="${sOpt.id}" ${sOpt.id === op.stage_id ? "selected" : ""}>Mover p/: ${escapeHtml(sOpt.name)}</option>`)
-                      .join("")}
-                  </select>
-                </div>
-              `
-                )
-                .join("")}
-            </div>
-          </div>
-        `;
-        })
-        .join("")}
+    <!-- BARRA DE FILTROS DO CRM + ALTERNÂNCIA KANBAN / LISTA + LIMPAR FILTROS (SEÇÃO 5.4 DO PLANO UX/UI) -->
+    <div class="filter-bar">
+      <div class="campo" style="min-width:210px;flex:1">
+        <label class="campo-label">🔍 Buscar Lead / Oportunidade</label>
+        <input
+          type="text"
+          value="${escapeHtml(cf.q)}"
+          placeholder="Empresa, contato, CNPJ, origem..."
+          oninput="updateCrmFilter('q', this.value)"
+        />
+      </div>
+
+      <div class="campo" style="min-width:155px">
+        <label class="campo-label">Etapa do Funil</label>
+        <select onchange="updateCrmFilter('stage', this.value)">
+          <option value="">Todas as etapas</option>
+          ${STATE.crm.stages.map((s) => `<option value="${s.id}" ${cf.stage === s.id ? "selected" : ""}>${escapeHtml(s.name)}</option>`).join("")}
+        </select>
+      </div>
+
+      <div class="campo" style="min-width:155px">
+        <label class="campo-label">Regime Tributário</label>
+        <select onchange="updateCrmFilter('regime', this.value)">
+          <option value="">Todos os regimes</option>
+          <option value="mei" ${cf.regime === "mei" ? "selected" : ""}>MEI</option>
+          <option value="simples" ${cf.regime === "simples" ? "selected" : ""}>Simples Nacional</option>
+          <option value="presumido" ${cf.regime === "presumido" ? "selected" : ""}>Lucro Presumido</option>
+          <option value="real" ${cf.regime === "real" ? "selected" : ""}>Lucro Real</option>
+        </select>
+      </div>
+
+      <div class="campo" style="min-width:155px">
+        <label class="campo-label">Vendedor Responsável</label>
+        <select onchange="updateCrmFilter('seller', this.value)">
+          <option value="">Todos os vendedores</option>
+          ${(STATE.crm.sellers || []).map((s) => `<option value="${s.id}" ${cf.seller === s.id ? "selected" : ""}>${escapeHtml(s.name)}</option>`).join("")}
+        </select>
+      </div>
+
+      <div class="filter-actions">
+        <button type="button" class="btn-secondary" onclick="clearCrmFilters()">↺ Limpar filtros</button>
+        <button
+          type="button"
+          class="${vm === "kanban" ? "btn-primary" : "btn-secondary"}"
+          onclick="STATE.crmViewMode='kanban';renderApp()"
+          title="Visualização padrão em colunas Kanban"
+        >
+          📊 Kanban
+        </button>
+        <button
+          type="button"
+          class="${vm === "lista" ? "btn-primary" : "btn-secondary"}"
+          onclick="STATE.crmViewMode='lista';renderApp()"
+          title="Alternar para visualização tabular em Lista"
+        >
+          📋 Lista
+        </button>
+      </div>
     </div>
+
+    <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:12px;font-size:12.5px;color:var(--muted)">
+      <span>
+        💡 Arraste e solte no Kanban, use o seletor de etapa, clique em <strong>🔍 Detalhes</strong> para abrir o Painel Lateral (Drawer) ou em <strong>🗑️ Excluir</strong> para retirar o lead.
+      </span>
+      <span>Exibindo <strong>${filteredOpps.length}</strong> de <strong>${STATE.crm.opportunities.length}</strong> lead(s)</span>
+    </div>
+
+    ${
+      vm === "lista"
+        ? `
+      <!-- VISÃO EM LISTA DO CRM (SEÇÃO 5.4 DO PLANO UX/UI) -->
+      <div class="card">
+        <div class="card-body">
+          ${
+            filteredOpps.length === 0
+              ? `<div class="empty-state-box">Nenhum lead encontrado para os filtros selecionados.</div>`
+              : `
+            <div class="table-responsive">
+              <table class="data-table">
+                <thead>
+                  <tr>
+                    <th>Empresa / Cliente</th>
+                    <th>Etapa Atual</th>
+                    <th>Regime / Porte</th>
+                    <th>Valor Mensal Potencial</th>
+                    <th>Responsável</th>
+                    <th>Tempo Parado</th>
+                    <th>Próxima Atividade</th>
+                    <th>Ações</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  ${filteredOpps
+                    .map((op) => {
+                      const stg = STATE.crm.stages.find((s) => s.id === op.stage_id) || {};
+                      const idle = getLeadIdleDays(op);
+                      return `
+                      <tr>
+                        <td>
+                          <strong style="cursor:pointer;color:var(--gold)" onclick="openLeadDrawer('${op.id}')">${escapeHtml(op.company_name)}</strong>
+                          <div style="font-size:11.5px;color:var(--muted)">👤 ${escapeHtml(op.contact_name)} · ${escapeHtml(op.cpf_cnpj || "Sem CNPJ")}</div>
+                        </td>
+                        <td>
+                          <select style="font-size:11.5px;padding:4px 8px;width:auto" onchange="moveOppViaSelect('${op.id}', this.value)">
+                            ${STATE.crm.stages
+                              .map((sOpt) => `<option value="${sOpt.id}" ${sOpt.id === op.stage_id ? "selected" : ""}>${escapeHtml(sOpt.name)}</option>`)
+                              .join("")}
+                          </select>
+                        </td>
+                        <td>
+                          <span class="tag">${escapeHtml((op.current_tax_regime || "simples").toUpperCase())}</span>
+                          <span style="font-size:11.5px;color:var(--muted);margin-left:4px">${op.employees_count || 0} func.</span>
+                        </td>
+                        <td><strong class="gold">${fmtBRL0(op.potential_monthly_value)}/mês</strong></td>
+                        <td>${escapeHtml(getSellerNameForOpp(op))}</td>
+                        <td><span class="tag ${idle > 7 ? "tag-warn" : ""}">⏱️ ${idle}d</span></td>
+                        <td>${escapeHtml(op.next_action || "-")} <span style="font-size:11px;color:var(--muted)">(${escapeHtml(op.next_action_date || "-")})</span></td>
+                        <td>
+                          <div style="display:flex;gap:5px;flex-wrap:wrap">
+                            <button class="btn-xs" onclick="openLeadDrawer('${op.id}')">🔍 Detalhes</button>
+                            <button class="btn-xs" onclick="openDiagnosticForOpp('${op.id}')">🩺 Diagnóstico</button>
+                            <button class="btn-xs" onclick="sendOppToCalculator('${op.id}')">🧮 Precificar</button>
+                            <button class="btn-xs btn-danger-xs" onclick="deleteOpportunityLead('${op.id}')">🗑️ Excluir</button>
+                          </div>
+                        </td>
+                      </tr>
+                    `;
+                    })
+                    .join("")}
+                </tbody>
+              </table>
+            </div>
+          `
+          }
+        </div>
+      </div>
+    `
+        : `
+      <!-- VISÃO KANBAN PADRÃO ENRIQUECIDA (SEÇÃO 5.4 DO PLANO UX/UI) -->
+      <div class="kanban-board">
+        ${STATE.crm.stages
+          .map((st) => {
+            const colOpps = filteredOpps.filter((o) => o.stage_id === st.id);
+            const colTotal = colOpps.reduce((acc, o) => acc + Number(o.potential_monthly_value || 0), 0);
+            return `
+            <div class="kanban-col"
+                 ondragover="event.preventDefault();this.classList.add('drag-over')"
+                 ondragleave="this.classList.remove('drag-over')"
+                 ondrop="handleKanbanDrop(event, '${st.id}', ${st.is_lost ? "true" : "false"})">
+              <div class="kanban-col-head">
+                <div class="kanban-col-title">
+                  <span class="stage-dot" style="background:${escapeHtml(st.color)}"></span>
+                  <span>${escapeHtml(st.name)}</span>
+                </div>
+                <span class="tag">${colOpps.length} · ${fmtBRL0(colTotal)}</span>
+              </div>
+              <div class="kanban-col-body">
+                ${colOpps
+                  .map((op) => {
+                    const idleDays = getLeadIdleDays(op);
+                    const sellerName = getSellerNameForOpp(op);
+                    return `
+                  <div class="kanban-card" draggable="true" ondragstart="event.dataTransfer.setData('text/plain', '${op.id}')">
+                    <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:6px">
+                      <span class="kanban-card-company" style="cursor:pointer" onclick="openLeadDrawer('${op.id}')" title="Clique para abrir o Painel Lateral (Drawer)">${escapeHtml(op.company_name)}</span>
+                      <div style="display:flex;align-items:center;gap:4px">
+                        <span class="tag tag-gold">${fmtBRL0(op.potential_monthly_value)}/mês</span>
+                        <button type="button" class="btn-xs btn-danger-xs" onclick="deleteOpportunityLead('${op.id}')" title="Retirar / Excluir este Lead">🗑️</button>
+                      </div>
+                    </div>
+                    <div class="kanban-card-contact">
+                      👤 ${escapeHtml(op.contact_name)} · 👔 ${escapeHtml(sellerName)}
+                    </div>
+                    <div class="kanban-tags">
+                      <span class="tag">${escapeHtml((op.current_tax_regime || "simples").toUpperCase())}</span>
+                      <span class="tag">${op.employees_count || 0} func.</span>
+                      <span class="tag ${idleDays > 7 ? "tag-warn" : ""}" title="Tempo parado nesta etapa">⏱️ ${idleDays}d parado</span>
+                      ${op.has_diagnostic ? '<span class="tag tag-ok">✓ Diagnóstico</span>' : ""}
+                      ${op.latest_proposal_status ? `<span class="tag tag-gold">Prop.: ${escapeHtml(op.latest_proposal_status)}</span>` : ""}
+                      ${op.loss_reason_name ? `<span class="tag tag-warn">Perda: ${escapeHtml(op.loss_reason_name)}</span>` : ""}
+                    </div>
+                    ${
+                      op.next_action
+                        ? `<div style="font-size:11px;color:var(--cream);background:var(--navy-3);padding:5px 7px;border-radius:6px;border:1px solid var(--line)">
+                            📌 <strong>Próx. atividade:</strong> ${escapeHtml(op.next_action)} (${escapeHtml(op.next_action_date || "-")})
+                          </div>`
+                        : ""
+                    }
+                    <div class="kanban-card-actions">
+                      <button class="btn-xs" onclick="openLeadDrawer('${op.id}')" title="Abrir Painel Lateral de Detalhes">🔍 Detalhes</button>
+                      <button class="btn-xs" onclick="openDiagnosticForOpp('${op.id}')">🩺 Diagnóstico</button>
+                      <button class="btn-xs" onclick="sendOppToCalculator('${op.id}')">🧮 Precificar</button>
+                      <button class="btn-xs" onclick="openActivityModalForOpp('${op.id}')">+ Tarefa</button>
+                      <button class="btn-xs btn-danger-xs" onclick="deleteOpportunityLead('${op.id}')" title="Retirar / Excluir este Lead">🗑️ Excluir</button>
+                    </div>
+                    <select style="font-size:11px;padding:4px 6px;margin-top:2px" onchange="moveOppViaSelect('${op.id}', this.value)">
+                      ${STATE.crm.stages
+                        .map((sOpt) => `<option value="${sOpt.id}" ${sOpt.id === op.stage_id ? "selected" : ""}>Mover p/: ${escapeHtml(sOpt.name)}</option>`)
+                        .join("")}
+                    </select>
+                  </div>
+                `;
+                  })
+                  .join("")}
+              </div>
+            </div>
+          `;
+          })
+          .join("")}
+      </div>
+    `
+    }
   `;
 }
 
